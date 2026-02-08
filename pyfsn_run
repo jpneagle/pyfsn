@@ -1,0 +1,29 @@
+#!/usr/bin/env python3
+"""Wrapper script for pyfsn to avoid Python 3.14 runpy bug.
+
+Usage: ./pyfsn_run [path] [options]
+
+Python 3.14 has a bug in runpy that causes RecursionError when using
+python -m with packages that have src layout. This wrapper uses
+exec() with compile() to bypass runpy entirely.
+"""
+
+import sys
+import os
+from pathlib import Path
+
+# Set PYTHONPATH before any imports to avoid Python 3.14 runpy bug
+project_root = Path(__file__).parent
+src_dir = project_root / "src"
+os.environ['PYTHONPATH'] = str(src_dir)
+
+# Also add to sys.path for safety
+if str(src_dir) not in sys.path:
+    sys.path.insert(0, str(src_dir))
+
+# Execute __main__.py using exec to bypass runpy
+main_file = src_dir / "pyfsn" / "__main__.py"
+if __name__ == "__main__":
+    with open(main_file) as f:
+        code = compile(f.read(), str(main_file), "exec")
+        exec(code)

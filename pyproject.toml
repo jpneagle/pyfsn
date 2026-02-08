@@ -1,0 +1,55 @@
+[project]
+name = "pyfsn"
+version = "0.1.0"
+description = "Python File System Navigator - 3D interactive file visualization"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "PyQt6>=6.6.0",
+    "PyOpenGL>=3.1.0",
+    "numpy>=1.24.0",
+]
+
+[project.scripts]
+pyfsn = "pyfsn.run:main"
+
+[project.optional-dependencies]
+# Legacy renderer (PyOpenGL) - default, includes acceleration
+legacy = [
+    "PyOpenGL-accelerate>=3.1.0",
+]
+# Modern renderer (ModernGL) - alternative OpenGL backend
+modern = [
+    "ModernGL>=5.9.0",
+    "moderngl-window>=2.4.0",
+    "scipy>=1.11.0",
+]
+# Video preview support (thumbnails for video files)
+video = [
+    "opencv-python>=4.8.0",
+]
+# Performance acceleration for PyOpenGL (can be added to base install)
+accelerate = [
+    "PyOpenGL-accelerate>=3.1.0",
+]
+# All extras
+all = [
+    "pyfsn[legacy,modern,video]",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pyfsn"]
+
+[tool.hatch.build.targets.sdist]
+packages = ["src/pyfsn"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W"]

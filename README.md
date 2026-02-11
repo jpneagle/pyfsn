@@ -1,14 +1,14 @@
 # pyfsn - Python File System Navigator
 
-A 3D interactive file system visualization tool inspired by SGI IRIX fsn, built with Python, PyQt6, and PyOpenGL.
+A 3D interactive file system visualization tool inspired by SGI IRIX fsn—the legendary interface used in Jurassic Park to "lock the door."
 
 ![pyfsn](https://img.shields.io/badge/python-3.10+-blue.svg)
 ![license](https://img.shields.io/badge/license-MIT-green.svg)
 
 ## Screenshot
 
-It's a Unix System... I know this.
 ![pyfsn screenshot](docs/screenshot.png)
+It's a Unix System... I know this.
 
 ## Overview
 
@@ -17,6 +17,7 @@ pyfsn provides an immersive 3D visualization of your file system. Directories ap
 ## Features
 
 - **3D Visualization**: Explore directory structures in an interactive 3D space
+- **Dual Camera Modes**: Orbit (rotate/zoom/pan) and Fly (FPS-style WASD + Mouse Look with collision detection)
 - **GPU-Accelerated Rendering**: PyOpenGL (Legacy OpenGL 2.1) for compatibility; ModernGL renderer also available
 - **Real-time Search with Spotlight**: Visual search effects that highlight matching nodes with cone spotlights
 - **Advanced Filtering**: Filter by size, age, and type with context preservation
@@ -96,11 +97,11 @@ python -m pyfsn ~
 The pyfsn window consists of:
 
 - **Main Viewport**: 3D visualization of your file system
-- **Control Panel** (left): Camera mode buttons, navigation controls, statistics
+- **Control Panel** (right): Navigation controls, Fly Mode toggle, view options, statistics
 - **Search Bar** (top): Real-time file search
 - **File Tree Panel** (dockable): Hierarchical file tree view
 - **Status Bar** (bottom): Current path and status messages
-- **Menu Bar**: File, View, Camera, and Help menus
+- **Menu Bar**: File, View, and Help menus
 
 ### Visualization Guide
 
@@ -122,10 +123,10 @@ The pyfsn window consists of:
 
 ### Controls Reference
 
-#### Mouse Controls - 3D View
+#### Mouse Controls - 3D View (Orbit Mode)
 | Action | Operation |
 |--------|-----------|
-| **Left-drag** | Rotate camera (Orbit mode) |
+| **Left-drag** | Rotate camera |
 | **Right-drag** | Pan camera |
 | **Shift+Left-drag** | Pan camera (macOS trackpad alternative) |
 | **Middle-drag** | Pan camera |
@@ -134,11 +135,31 @@ The pyfsn window consists of:
 | **Double-click directory** | Navigate to directory (change current directory) |
 | **Double-click file** | Open file with default application |
 
+#### Mouse Controls - 3D View (Fly Mode)
+| Action | Operation |
+|--------|-----------|
+| **Left-drag** | Look around (rotate view) |
+| **Right-drag** | Look around (rotate view) |
+| **Click** | Select node |
+| **Double-click directory** | Navigate to directory |
+| **Double-click file** | Open file with default application |
+
 #### Mouse Controls - File Tree
 | Action | Operation |
 |--------|-----------|
 | **Click** | Select and navigate to item |
 | **Double-click** | Open file / Navigate to directory |
+
+#### Keyboard Controls - Fly Mode (when Fly Mode is active)
+| Key | Action |
+|-----|--------|
+| `W` | Move forward |
+| `S` | Move backward |
+| `A` | Strafe left |
+| `D` | Strafe right |
+| `Q` | Move down |
+| `E` | Move up |
+| `Shift` (hold) | Sprint (2x speed) |
 
 #### Keyboard Controls - Application (Menu Shortcuts)
 | Key | Action |
@@ -150,7 +171,7 @@ The pyfsn window consists of:
 | `F5` | Refresh current view |
 | `Ctrl+Q` | Exit application |
 
-Note: 3D view内でのキーボードによるカメラ操作（Esc等）は未実装です。選択解除は背景クリックで行えます。
+Note: Use the Control Panel button to toggle Fly Mode. Collision detection is enabled during flight. Click the background to deselect.
 
 ### Search Functionality
 
@@ -248,6 +269,7 @@ pyfsn/
 └── docs/
     ├── API.md               # API documentation
     ├── SPEC.md              # Technical specifications (Japanese)
+    ├── FEATURE.md           # Feature roadmap
     ├── MEDIA_PREVIEW.md     # Media preview feature docs
     ├── ADVANCED_EFFECTS.md  # Bloom/emissive/wire pulse effects docs
     ├── EFFECTS_IMPLEMENTATION_SUMMARY.md # Effects implementation summary
@@ -267,10 +289,11 @@ pyfsn/
 ### Optimization Features
 
 - **PyOpenGL Legacy Mode**: Immediate mode rendering for compatibility
-- **Frustum Culling**: Utility for skipping off-screen nodes (implemented, not yet wired to renderer)
-- **Level of Detail (LOD)**: Utility for simplified distant rendering (implemented, not yet wired to renderer)
+- **Frustum Culling**: Used in `paintGL()` for camera updates and `is_node_visible()` checks
+- **Level of Detail (LOD)**: Distance-based edge rendering skip and small cube culling (partially wired)
 - **Progressive Loading**: Utility for batch loading (implemented, not yet wired to renderer)
 - **Wire Connection Highlighting**: Only highlight selected connections
+- **Collision Detection**: AABB-based collision for Fly mode (ground, platforms, file cubes)
 
 ## Development
 
@@ -312,6 +335,7 @@ pyfsn follows a Model-View-Controller (MVC) pattern:
 
 See [docs/API.md](docs/API.md) for detailed API documentation.
 See [docs/SPEC.md](docs/SPEC.md) for technical specifications (in Japanese).
+See [docs/FEATURE.md](docs/FEATURE.md) for feature roadmap.
 See [docs/MEDIA_PREVIEW.md](docs/MEDIA_PREVIEW.md) for media preview feature documentation.
 See [docs/ADVANCED_EFFECTS.md](docs/ADVANCED_EFFECTS.md) for bloom/emissive/wire pulse effects documentation.
 
@@ -321,7 +345,7 @@ See [docs/ADVANCED_EFFECTS.md](docs/ADVANCED_EFFECTS.md) for bloom/emissive/wire
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│ APPLICATION (MENU SHORTCUTS)                           │
+│ APPLICATION (MENU SHORTCUTS)                            │
 ├─────────────────────────────────────────────────────────┤
 │ Ctrl+O      Open directory                              │
 │ Ctrl+T      Toggle file tree                            │
@@ -329,6 +353,14 @@ See [docs/ADVANCED_EFFECTS.md](docs/ADVANCED_EFFECTS.md) for bloom/emissive/wire
 │ Ctrl+L      Toggle labels                               │
 │ F5          Refresh                                     │
 │ Ctrl+Q      Exit                                        │
+├─────────────────────────────────────────────────────────┤
+│ FLY MODE (when active)                                  │
+├─────────────────────────────────────────────────────────┤
+│ W/S         Forward / Backward                          │
+│ A/D         Strafe Left / Right                         │
+│ Q/E         Down / Up                                   │
+│ Shift       Sprint (2x speed)                           │
+│ L/R-Drag    Look around                                 │
 └─────────────────────────────────────────────────────────┘
 ```
 

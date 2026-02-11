@@ -671,6 +671,7 @@ class ControlPanel(QWidget):
     show_tree_toggled = pyqtSignal(bool)
     filter_panel_toggled = pyqtSignal(bool)
     labels_toggled = pyqtSignal(bool)
+    fly_mode_toggled = pyqtSignal(bool)
 
     def __init__(self, parent=None) -> None:
         """Initialize control panel."""
@@ -711,6 +712,28 @@ class ControlPanel(QWidget):
 
         nav_layout.addStretch()
         layout.addLayout(nav_layout)
+        
+        # Fly Mode Toggle
+        self._fly_mode_btn = QPushButton("Fly Mode")
+        self._fly_mode_btn.setCheckable(True)
+        self._fly_mode_btn.setChecked(False)
+        self._fly_mode_btn.setToolTip("Toggle First-Person Fly Mode (WASD)")
+        self._fly_mode_btn.clicked.connect(self.fly_mode_toggled.emit)
+        layout.addWidget(self._fly_mode_btn)
+        
+        # Fly Mode Instructions (Hidden by default)
+        self._fly_instructions = QLabel(
+            "<b>Fly Controls:</b><br>"
+            "W/S: Forward/Back<br>"
+            "A/D: Left/Right<br>"
+            "Q/E: Down/Up<br>"
+            "Shift: Sprint<br>"
+            "L/R-Drag: Look"
+        )
+        self._fly_instructions.setWordWrap(True)
+        self._fly_instructions.setStyleSheet("background: #2a2a2a; padding: 5px; border-radius: 4px; font-size: 10px;")
+        self._fly_instructions.setVisible(False)
+        layout.addWidget(self._fly_instructions)
 
         self._refresh_btn = QPushButton("Refresh")
         self._refresh_btn.setToolTip("Rescan current directory (F5)")
@@ -751,18 +774,15 @@ class ControlPanel(QWidget):
 
         layout.addSpacing(12)
         
-        # Info section
-        layout.addWidget(QLabel("<b>Controls:</b>"))
+        # General Info section (Always visible)
+        layout.addWidget(QLabel("<b>General Controls:</b>"))
         info = QLabel(
             "<b>Mouse:</b><br>"
-            "Left-drag: Rotate<br>"
-            "Right-drag: Pan<br>"
-            "Shift+Left-drag: Pan<br>"
-            "Middle-drag: Pan<br>"
+            "L-Drag: Rotate (Orbit)<br>"
+            "R-Drag: Pan/Look<br>"
             "Scroll: Zoom<br>"
             "Click: Select<br>"
-            "Dbl-click dir: Navigate<br>"
-            "Dbl-click file: Open"
+            "Dbl-Click: Open"
         )
         info.setWordWrap(True)
         info.setStyleSheet("color: gray; font-size: 10px;")
@@ -776,13 +796,32 @@ class ControlPanel(QWidget):
         layout.addWidget(self._stats_label)
 
     def set_camera_mode_display(self, mode: CameraMode) -> None:
-        """Update camera mode display.
+        """Update camera mode display and UI state.
         
         Args:
             mode: Current camera mode
         """
+        is_fly = (mode == CameraMode.FLY)
+        
+        # Update button state without triggering signal
+        self._fly_mode_btn.blockSignals(True)
+        self._fly_mode_btn.setChecked(is_fly)
+        self._fly_mode_btn.blockSignals(False)
+        
+        # Initial button text color update
+        if is_fly:
+            self._fly_mode_btn.setStyleSheet("background-color: #4a6a8a; color: white; font-weight: bold;")
+            self._fly_mode_btn.setText("Fly Mode: ON")
+        else:
+            self._fly_mode_btn.setStyleSheet("")
+            self._fly_mode_btn.setText("Fly Mode: OFF")
+            
+        # Toggle instructions visibility
+        self._fly_instructions.setVisible(is_fly)
+        
         mode_names = {
             CameraMode.ORBIT: "Orbit",
+            CameraMode.FLY: "Fly",
         }
         self._camera_mode_label.setText(mode_names.get(mode, "Unknown"))
     
@@ -820,6 +859,19 @@ class SearchBar(QLineEdit):
         self._debounce_timer.setSingleShot(True)
         self._debounce_timer.timeout.connect(lambda: self.search_requested.emit(text))
         self._debounce_timer.start(300)  # 300ms debounce
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        """Handle key press events."""
+        key = event.key()
+        if key == Qt.Key.Key_Escape or key == Qt.Key.Key_Down:
+            self.clearFocus()
+            # Return focus to renderer if possible
+            window = self.window()
+            if hasattr(window, 'renderer'):
+                window.renderer.setFocus()
+            return
+
+        super().keyPressEvent(event)
 
 
 class FileTreeWidget(QTreeWidget):
@@ -1087,6 +1139,9 @@ class MainWindow(QMainWindow):
         self._status_bar = QStatusBar()
         self.setStatusBar(self._status_bar)
         self._status_bar.showMessage(f"Root: {self._root_path}")
+        
+        # Default focus to search bar (Orbit Mode)
+        self._search_bar.setFocus()
 
     @property
     def file_tooltip(self) -> ImagePreviewTooltip | None:
@@ -1174,6 +1229,7 @@ class MainWindow(QMainWindow):
         self._control_panel.show_tree_toggled.connect(self._toggle_file_tree)
         self._control_panel.filter_panel_toggled.connect(self._toggle_filter_panel)
         self._control_panel.labels_toggled.connect(self._toggle_labels)
+        self._control_panel.fly_mode_toggled.connect(self._on_fly_mode_toggled)
 
         # Search bar signal
         self._search_bar.search_requested.connect(self.search_requested.emit)
@@ -1234,6 +1290,32 @@ class MainWindow(QMainWindow):
             self._text_overlay.clear()
         self._toggle_labels_action.setChecked(self._show_labels)
         self._control_panel._show_labels_btn.setChecked(self._show_labels)
+    
+    def _on_fly_mode_toggled(self, enabled: bool) -> None:
+        """Handle fly mode toggle.
+        
+        Args:
+            enabled: Whether fly mode is enabled
+        """
+        if not self._renderer:
+            return
+            
+        new_mode = CameraMode.FLY if enabled else CameraMode.ORBIT
+        self._renderer.camera.set_mode(new_mode)
+        
+        # Manually trigger the callback since we are bypassing input handler for toggle
+        # Actually, since we set it on camera directly, we should update UI?
+        # The input handler callback updates UI when mode changes via Tab.
+        # Here UI triggered it, so we should just ensure consistency.
+        self._control_panel.set_camera_mode_display(new_mode)
+        
+        # Manage focus
+        if enabled:
+            # Fly Mode: Focus renderer for WASD
+            self._renderer.setFocus()
+        else:
+            # Orbit Mode: Focus search bar
+            self._search_bar.setFocus()
 
     def _reset_view(self) -> None:
         """Reset camera to default view."""

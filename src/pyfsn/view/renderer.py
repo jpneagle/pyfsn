@@ -49,6 +49,8 @@ class Renderer(QOpenGLWidget):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
 
         # Camera
         self.camera = Camera()
@@ -115,6 +117,9 @@ class Renderer(QOpenGLWidget):
 
         # Animation time for shader effects
         self._animation_time = 0.0
+
+        # Input handler
+        self._input_handler = None
 
         # OpenGL state
         self._initialized = False
@@ -929,6 +934,14 @@ class Renderer(QOpenGLWidget):
 
     # Tooltip setter
 
+    def set_input_handler(self, handler) -> None:
+        """Set the input handler for continuous updates.
+
+        Args:
+            handler: InputHandler instance
+        """
+        self._input_handler = handler
+
     def set_tooltip(self, tooltip_widget) -> None:
         """Set the tooltip widget reference for hover functionality.
         
@@ -1137,6 +1150,10 @@ class Renderer(QOpenGLWidget):
 
     def _on_timer(self) -> None:
         """Timer callback for animation."""
+        # Process input updates (Fly Mode movement)
+        if self._input_handler:
+            self._input_handler.update()
+
         # Update animation time for shader effects
         self._animation_time += 0.016  # ~60 FPS
 
@@ -1615,6 +1632,52 @@ class Renderer(QOpenGLWidget):
         # Disable texturing and blending
         glDisable(GL_TEXTURE_2D)
         glDisable(GL_BLEND)
+
+    def check_collision(self, position: np.ndarray, radius: float = 0.5) -> bool:
+        """Check if a position collides with any geometry.
+        
+        Args:
+            position: Position to check [x, y, z]
+            radius: Radius of the object (camera)
+            
+        Returns:
+            True if collision detected
+        """
+        # 1. Ground collision
+        if position[1] < radius:  # Assuming ground is at y=0 (or -0.5)
+            # Actually ground is at -0.5, but we want to stay above y=0.5
+            return True
+            
+        # 2. Platform collision (AABB)
+        # Only check if we are low enough to hit platforms
+        # Platforms are usually thin, maybe y=0 to y=1?
+        # Let's check platform scale from typical layout
+        
+        # Helper for AABB overlap
+        def check_aabb(pos, box_pos, box_scale, margin):
+            # Box bounds
+            box_min = box_pos - box_scale * 0.5 - margin
+            box_max = box_pos + box_scale * 0.5 + margin
+            
+            # Point vs Box
+            return (pos[0] >= box_min[0] and pos[0] <= box_max[0] and
+                    pos[1] >= box_min[1] and pos[1] <= box_max[1] and
+                    pos[2] >= box_min[2] and pos[2] <= box_max[2])
+
+        # Check platforms
+        margin = radius
+        for platform in self._platforms:
+            if check_aabb(position, platform.position, platform.scale, margin):
+                return True
+                
+        # Check files (only if close to ground/platforms)
+        # Optimize: only check if y is within typical file height range
+        if position[1] < 20.0:  # Optimization
+            for cube in self._cubes:
+                if check_aabb(position, cube.position, cube.scale, margin):
+                    return True
+                    
+        return False
 
     def _calculate_label_positions(self) -> dict[str, tuple[float, float, float, float]]:
         """Calculate label positions with collision avoidance.

@@ -60,6 +60,7 @@ class Controller(QObject):
 
         # Create input handler
         self._input_handler = InputHandler(self._camera, self._renderer)
+        self._renderer.set_input_handler(self._input_handler)
 
         # Create layout engine
         self._layout_config = LayoutConfig(

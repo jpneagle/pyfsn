@@ -12,11 +12,12 @@ SGI IRIXのファイルシステム可視化ツール fsn をPythonで忠実に�
 |------|------|
 | **3D可視化** | ディレクトリごとの浮遊プラットフォーム、ワイヤー接続、ファイルキューブ |
 | **GPUレンダリング** | PyOpenGL (Legacy OpenGL 2.1 / Compatibility) による描画（固定機能＋即時モード） |
-| **カメラモード** | Orbit（回転）- マウスドラッグで操作 |
+| **カメラモード** | Orbit（回転）/ Fly（FPS風WASD移動＋マウス視点変更＋衝突検出）をUIボタンで切り替え |
 | **ナビゲーション履歴** | Back/Forward（メニュー・プログラム内部で管理） |
 | **リアルタイム検索** | ファイル名のインクリメンタルサーチ |
 | **高度なフィルタリング** | サイズ・年齢・種別による絞り込み（FilterPanel） |
 | **インタラクション** | スポットライト強調表示、ラベル表示、ファイル情報ツールチップ、ファイル年齢凡例 |
+| **衝突検出** | Flyモード時の地面・プラットフォーム・ファイルキューブとの衝突回避（AABB判定＋軸分離スライド） |
 | **メディアプレビュー** | 画像・動画ファイルのサムネイルプレビュー（ホバー時表示） |
 | **ファイルツリー** | 右ドックの階層ツリー（QTreeWidget）で選択・移動を補助 |
 
@@ -242,11 +243,11 @@ Platform_Width = (Grid_Cols * Cell_Size) + (Padding * 2)
 
 | 入力 | アクション |
 |------|-----------|
-| 左ドラッグ | カメラ回転（Orbitモード） |
-| 右ドラッグ | パン |
-| Shift+左ドラッグ | パン（macOSトラックパッド代替） |
-| 中ドラッグ | パン |
-| ホイール | ズーム |
+| 左ドラッグ | カメラ回転（Orbitモード）/ 視点回転（Flyモード） |
+| 右ドラッグ | パン（Orbitモード）/ 視点回転（Flyモード） |
+| Shift+左ドラッグ | パン（macOSトラックパッド代替、Orbitモード） |
+| 中ドラッグ | パン（Orbitモード） |
+| ホイール | ズーム（Orbitモード） |
 | 左クリック | 3Dビューでノード選択（Ray-AABBピッキング） |
 | ダブルクリック | ディレクトリへフォーカス＋選択 |
 | ファイルをダブルクリック | ファイルをOSデフォルトアプリで開く |
@@ -258,10 +259,11 @@ Platform_Width = (Grid_Cols * Cell_Size) + (Padding * 2)
 - ノードの選択/移動は **3Dビュー** と **ファイルツリードック** の両方から可能。
 - **右ドラッグパン**: 実装済み。2ボタンマウスやトラックパッドユーザー向け。
 - **Shift+左ドラッグパン**: macOSトラックパッドユーザー向け代替操作として実装済み。
+- **Flyモード視点操作**: 左ドラッグまたは右ドラッグで視点回転（`fly_look()`）。
 
 #### 4.3.2 キーボード操作
 
-現在、キーボードショートカットは未実装です。すべての操作はマウスとメニューバーから行います。
+**メニューショートカット（常時有効）:**
 
 | ショートカット | 機能 |
 |------|------|
@@ -272,7 +274,24 @@ Platform_Width = (Grid_Cols * Cell_Size) + (Padding * 2)
 | Ctrl+L | ノードラベルの表示切り替え |
 | Ctrl+Q | アプリケーション終了 |
 
-注: 3Dビュー内でのキーボードによるカメラ操作（F, R, Esc等）は現在未実装です。
+**Flyモード移動操作（Flyモード中のみ、レンダラーにフォーカス時）:**
+
+| キー | 機能 |
+|------|------|
+| W | 前方移動 |
+| S | 後方移動 |
+| A | 左方移動（ストレイフ） |
+| D | 右方移動（ストレイフ） |
+| Q | 下方移動 |
+| E | 上方移動 |
+| Shift（押しながら） | スプリント（2倍速） |
+
+注:
+- FlyモードはコントロールパネルのFly Modeボタンで切り替え可能。
+- Flyモード有効時はレンダラーに自動フォーカスされ、WASD操作が可能。
+- Orbitモードに戻るとサーチバーにフォーカスが戻る。
+- Flyモード中は衝突検出（地面・プラットフォーム・ファイルキューブ）が有効で、壁すり抜け防止の軸分離スライドが動作する。
+- F（スナップ）、R（リセット）、Esc（選択解除）等の3Dビュー内カメラ操作は未実装。
 
 ---
 
@@ -510,6 +529,7 @@ class LayoutEngine:
 ```python
 class CameraMode(Enum):
     ORBIT = "orbit"   # 注視点周りの回転
+    FLY = "fly"       # FPS風一人称カメラ（WASD移動＋マウス視点変更）
 
 @dataclass
 class CameraState:
@@ -521,24 +541,41 @@ class CameraState:
     far: float = 1000.0     # 遠クリップ面
 
 class Camera:
-    """3Dカメラシステム（Orbitモードのみ）"""
+    """3Dカメラシステム（Orbit / Fly 2モード対応）"""
 
     def __init__(self) -> None: ...
 
     @property
-    def view_matrix(self) -> np.ndarray: ...
+    def state(self) -> CameraState: ...
 
     @property
+    def view_matrix(self) -> np.ndarray: ...
+
     def projection_matrix(self, aspect_ratio: float) -> np.ndarray: ...
 
     def set_mode(self, mode: CameraMode) -> None: ...
 
+    # Orbit モード操作
     def orbit_rotate(self, dx: int, dy: int) -> None: ...
 
     def orbit_zoom(self, delta: float) -> None: ...
 
     def orbit_pan(self, dx: int, dy: int, view_width: int, view_height: int) -> None: ...
 
+    # Fly モード操作
+    def get_fly_move_vector(self, dx: float, dy: float, dz: float, speed_multiplier: float = 1.0) -> np.ndarray:
+        """Flyモードの移動ベクトルを計算（衝突検出用）"""
+        ...
+
+    def fly_move(self, dx: float, dy: float, dz: float, speed_multiplier: float = 1.0) -> None:
+        """Flyモードでの移動（前後左右上下）"""
+        ...
+
+    def fly_look(self, dx: int, dy: int) -> None:
+        """Flyモードでの視点回転（Yaw/Pitch）"""
+        ...
+
+    # 共通
     def set_position_target(self, position: np.ndarray, target: np.ndarray) -> None: ...
 
     def get_ray_direction(
@@ -547,7 +584,9 @@ class Camera:
 ```
 
 注:
-- 現在はOrbitモードのみをサポート。Fly/Snapモードは削除済み。
+- **Orbitモード**: マウスドラッグで注視点周りの回転/パン/ズーム。
+- **Flyモード**: WASD+Q/Eキーによる6自由度移動と、マウスドラッグ（左/右）による視点回転。Shift押しで2倍速スプリント。
+- Flyモード中の`target`はyaw/pitchから毎フレーム計算される。
 - ビュープリセット（Bird's Eye、Front view）は未実装。
 
 #### 5.3.2 CubeGeometryクラス（ModernGL用アセット）
@@ -591,6 +630,7 @@ class CubeInstance:
     scale: np.ndarray     # [width, height, depth]
     color: np.ndarray     # [r, g, b, a]
     shininess: float = 30.0  # スペキュラー光沢度（0-128）、ファイルキューブのデフォルト
+    emission: float = 0.0    # エミッション強度（0.0〜1.0+）、発光効果用
 
 class Renderer(QOpenGLWidget):
     """OpenGLレンダリングウィジェット"""
@@ -637,8 +677,24 @@ class Renderer(QOpenGLWidget):
 
     def set_camera_mode(self, mode: CameraMode) -> None: ...
 
+    def set_input_handler(self, handler) -> None:
+        """InputHandlerを設定（Flyモードの毎フレーム更新用）"""
+        ...
+
+    def set_tooltip(self, tooltip_widget) -> None:
+        """ホバーツールチップウィジェットを設定"""
+        ...
+
+    def check_collision(self, position: np.ndarray, radius: float = 0.5) -> bool:
+        """指定位置の衝突判定（Flyモード用: 地面、プラットフォーム、ファイルキューブ）"""
+        ...
+
     def get_screen_position(self, world_pos: np.ndarray) -> tuple[int, int] | None:
         """3D位置をスクリーン座標に変換（ラベル表示用）"""
+        ...
+
+    def is_node_visible(self, path: str) -> bool:
+        """ノードがカメラ視錐台内に表示されているか（FrustumCuller使用）"""
         ...
 
     @property
@@ -653,7 +709,11 @@ class Renderer(QOpenGLWidget):
 - **スカイグラデーション**: `_draw_sky_gradient()` によるフルスクリーングラデーション
 - **キューブエッジ**: `_draw_cube_edges()` によるエッジハイライト（`glPolygonOffset` でZ-fighting回避）
 
-注: ライティングは `glDisable(GL_LIGHTING)` により無効化されています（v1.6.0で無効化）。色は直接指定（`glColor4f`）で設定されます。エミッシブ効果は `SimpleBloom.apply_glow()` により色を加算ブースト方式で実現しています。
+注:
+- ライティングは `glDisable(GL_LIGHTING)` により無効化されています（v1.6.0で無効化）。色は直接指定（`glColor4f`）で設定されます。エミッシブ効果は `SimpleBloom.apply_glow()` により色を加算ブースト方式で実現しています。
+- **FrustumCuller** は `paintGL()` 内で `update_from_camera()` が呼ばれ、`is_node_visible()` で使用されます。
+- **LOD** は `_draw_cube_edges()` 内で距離に応じたエッジ描画スキップ（`_lod_edge_threshold=50.0`）と小キューブスキップ（`_lod_small_cube_threshold=100.0`）として部分的に接続済みです。
+- **衝突検出**: `check_collision()` がFlyモード時の移動で使用され、地面・プラットフォーム・ファイルキューブとのAABB判定を行います。
 
 ### 5.4 Controller Layer
 
@@ -718,6 +778,18 @@ class InputHandler:
 
     def set_selection_changed_callback(self, callback: Callable[[set[Node]], None]) -> None: ...
 
+    def set_navigate_next_callback(self, callback: Callable[[], None]) -> None:
+        """次ノードナビゲーションコールバックを設定"""
+        ...
+
+    def set_navigate_previous_callback(self, callback: Callable[[], None]) -> None:
+        """前ノードナビゲーションコールバックを設定"""
+        ...
+
+    def set_camera_mode_changed_callback(self, callback: Callable[[CameraMode], None]) -> None:
+        """カメラモード変更コールバックを設定"""
+        ...
+
     def mouse_press_event(self, event: QMouseEvent) -> bool: ...
 
     def mouse_release_event(self, event: QMouseEvent) -> bool: ...
@@ -728,9 +800,22 @@ class InputHandler:
 
     def mouse_double_click_event(self, event: QMouseEvent) -> bool: ...
 
-    def key_press_event(self, event: QKeyEvent) -> bool: ...
+    def key_press_event(self, event: QKeyEvent) -> bool:
+        """キー押下処理（Flyモード用: W/A/S/D/Q/Eのキートラッキング）"""
+        ...
 
-    def key_release_event(self, event: QKeyEvent) -> bool: ...
+    def key_release_event(self, event: QKeyEvent) -> bool:
+        """キー解放処理"""
+        ...
+
+    def update(self) -> None:
+        """毎フレーム呼ばれる連続入力処理（Flyモードの移動＋衝突検出）
+        
+        Flyモード時にWASD/Q/Eの押下状態から移動ベクトルを計算し、
+        Renderer.check_collision() で衝突判定後に位置を更新する。
+        衝突時は軸分離スライドを試みる。
+        """
+        ...
 ```
 
 #### 5.4.2 Controllerクラス
@@ -768,6 +853,10 @@ class Controller(QObject):
     def can_go_back(self) -> bool: ...
 
     def can_go_forward(self) -> bool: ...
+
+    def set_camera_mode(self, mode: CameraMode) -> None:
+        """カメラナビゲーションモードを設定"""
+        ...
 
     def next_search_result(self) -> None: ...
 
@@ -869,11 +958,12 @@ class ControlPanel(QWidget):
     show_tree_toggled = pyqtSignal(bool)
     filter_panel_toggled = pyqtSignal(bool)
     labels_toggled = pyqtSignal(bool)
+    fly_mode_toggled = pyqtSignal(bool)  # Flyモード切り替え
 
     def update_stats(self, node_count: int, selected_count: int = 0) -> None: ...
 
     def set_camera_mode_display(self, mode: CameraMode) -> None:
-        """カメラモード表示を更新する"""
+        """カメラモード表示を更新する（ボタン状態＋Fly操作説明の表示切り替え）"""
         ...
 
 class SearchBar(QLineEdit):
@@ -884,7 +974,8 @@ class SearchBar(QLineEdit):
 class FileTreeWidget(QTreeWidget):
     """ファイル階層ツリー表示ウィジェット"""
 
-    node_selected = pyqtSignal(object)  # Node
+    node_selected = pyqtSignal(object)       # Node（クリック時）
+    node_double_clicked = pyqtSignal(object)  # Node（ダブルクリック時）
 
     def load_tree(self, root_node: Node) -> None: ...
 
@@ -900,6 +991,7 @@ class MainWindow(QMainWindow):
     go_back_requested = pyqtSignal()
     go_forward_requested = pyqtSignal()
     filter_changed = pyqtSignal(dict)
+    tree_node_double_clicked = pyqtSignal(object)  # ファイルツリーのダブルクリック
 
     def __init__(self, root_path: Path) -> None: ...
 
@@ -910,14 +1002,21 @@ class MainWindow(QMainWindow):
     def text_overlay(self) -> TextOverlay: ...
 
     @property
-    def file_tooltip(self) -> FileTooltipOverlay | None: ...
+    def file_tooltip(self) -> ImagePreviewTooltip | None: ...
 
     @property
     def file_tree(self) -> FileTreeWidget: ...
 
+    @property
+    def mini_map(self) -> MiniMap | None: ...
+
+    @property
+    def show_labels(self) -> bool: ...
+
     def update_stats(self, node_count: int, selected_count: int = 0) -> None: ...
     def set_status_message(self, message: str) -> None: ...
     def set_root_path(self, path: Path) -> None: ...
+    def update_navigation_state(self, can_go_back: bool, can_go_forward: bool) -> None: ...
 ```
 
 ---
@@ -931,7 +1030,7 @@ Legacy OpenGL (Compatibility Profile):
 - `Renderer` は `glBegin(GL_QUADS)` によるキューブ描画と、`glBegin(GL_LINES)` によるワイヤー描画を行う。
 - 即時モード（Immediate mode）中心の実装で、描画負荷はノード数に比例して増加する。
 - macOS/古いGPU環境との互換性を最優先した設計。
-- ライティングは固定機能パイプライン（GL_LIGHTING、GL_LIGHT0、GL_LIGHT1）を使用。
+- ライティングは無効化（`glDisable(GL_LIGHTING)`）。色は `glColor4f` で直接指定。
 ```
 
 実装済み機能:
@@ -948,9 +1047,14 @@ Legacy OpenGL (Compatibility Profile):
 - **エミッシブエフェクト**（SimpleBloomによる発光効果）
 - **ワイヤーパルスアニメーション**（接続線のサイバーパンク風アニメーション）
 
+部分接続済みの最適化:
+- **FrustumCuller**: `paintGL()` 内で `update_from_camera()` を呼び、`is_node_visible()` で使用。
+- **LOD（エッジ描画）**: `_draw_cube_edges()` 内で距離に応じたエッジ描画スキップ（閾値50.0）と小キューブスキップ（閾値100.0の30%）を実装済み。
+
 将来の最適化候補:
 - `view/cube_geometry.py` と `view/shaders.py` は ModernGL のインスタンシング経路向けに実装済み。
 - ModernGL バックエンドを追加することで、10万ノード規模でも高FPSを実現可能（現状は未接続）。
+- FrustumCullerをキューブ描画ループ全体に接続して、描画スキップを拡大。
 
 ### 6.2 パフォーマンス監視
 
@@ -1371,7 +1475,8 @@ class LayoutConfig:
 - **ディレクトリ名表示**: SGI fsnスタイルの手書き風テキストを地面に配置（衝突回避付き）
 - **ファイルツリーファイルオープン**: ダブルクリックでファイルを開く
 - **カメラスナップアクション**: ダブルクリックでイージングアニメーション（300ms）付きフォーカス
-- **Orbitカメラモード**: 注視点周りの回転（マウスドラッグ操作）
+- **Orbit/Flyカメラモード**: Orbit（注視点周り回転）とFly（FPS風WASD移動＋マウス視点）をボタンで切り替え
+- **Flyモード衝突検出**: 地面・プラットフォーム・ファイルキューブとのAABB判定＋軸分離スライド
 - **ナビゲーション履歴**: Back/Forward（内部で管理、UIから操作可能）
 - **スポットライト**: 選択ノード上に半透明コーン表示
 - **ファイルツリー**: QTreeWidget による階層表示＋同期選択
@@ -1400,20 +1505,22 @@ class LayoutConfig:
 - **ピッキングシステム**: Ray-AABB交差判定の独立モジュール（PickingSystem）
 
 ### 🎮 操作系
-- **マウス**: 左ドラッグ回転、右ドラッグパン、中ドラッグパン、ホイールズーム
-- **Shift+左ドラッグ**: macOSトラックパッド向けパン代替操作
+- **マウス（Orbit）**: 左ドラッグ回転、右ドラッグパン、中ドラッグパン、ホイールズーム
+- **マウス（Fly）**: 左ドラッグ/右ドラッグで視点回転
+- **Shift+左ドラッグ**: macOSトラックパッド向けパン代替操作（Orbit）
 - **3Dクリック**: 左クリック選択、ダブルクリックフォーカス/ナビゲート
+- **Flyモード移動**: W/S（前後）、A/D（左右）、Q/E（上下）、Shift（スプリント）
 - **メニューショートカット**: Ctrl+O（開く）、F5（更新）、Ctrl+T（ツリー）、Ctrl+F（フィルタ）、Ctrl+L（ラベル）
 - **修飾キー**: Ctrl+クリック（トグル）、Shift+クリック（追加選択）
 
 ### ❌ 未実装機能
-- **キーボードによる3Dビュー操作**: F（スナップ）、R（リセット）、Esc（選択解除）等
+- **キーボードによるカメラ操作**: F（スナップ）、R（リセット）、Esc（選択解除）等
 - **ビュープリセット**: Bird's Eye、Front view
 
-### 🔧 最適化機能（実装済み、一部未接続）
-- **PerformanceMonitor**: FPS/フレームタイム計測
-- **FrustumCuller**: 視錐台カリング（未接続）
-- **LevelOfDetail**: 距離ベースLOD（未接続）
+### 🔧 最適化機能
+- **PerformanceMonitor**: FPS/フレームタイム計測（接続済み）
+- **FrustumCuller**: 視錐台カリング（部分接続: `paintGL` で更新、`is_node_visible` で使用）
+- **LevelOfDetail**: 距離ベースLOD（部分接続: エッジ描画スキップ、小キューブスキップ）
 - **ProgressiveLoader**: プログレッシブロード（未接続）
 
 ### 📦 将来の拡張資産（実装済み、未使用）
@@ -1423,6 +1530,31 @@ class LayoutConfig:
 ---
 
 ## 13. 変更履歴
+
+### v2.0.0 (2026-02-11) - Flyモード復活＆衝突検出
+
+**新機能**
+- Flyカメラモードの復活（FPS風WASD移動＋マウス視点変更）
+  - W/S: 前後移動、A/D: 左右移動（ストレイフ）、Q/E: 上下移動
+  - Shift: スプリント（2倍速移動）
+  - 左ドラッグ/右ドラッグ: 視点回転（yaw/pitch）
+- 衝突検出システム（`Renderer.check_collision()`）
+  - 地面との衝突（y < radius）
+  - プラットフォーム（ディレクトリ）とのAABB判定
+  - ファイルキューブとのAABB判定（y < 20.0 最適化付き）
+  - 軸分離スライド（衝突時にX/Y/Z各軸を独立で試行し壁滑りを実現）
+- コントロールパネルにFly Modeトグルボタンを追加
+  - ON/OFF表示切り替え、操作説明の自動表示
+  - Flyモード時はレンダラーに自動フォーカス、Orbitモードではサーチバーにフォーカス
+
+**変更**
+- `Camera`: FLYモード追加（`fly_move`, `fly_look`, `get_fly_move_vector`）
+- `InputHandler`: Flyモード用キートラッキング（WASD/Q/E）、`update()` メソッド追加
+- `Renderer`: `set_input_handler()` でフレーム毎のFly更新、`_on_timer()` で `input_handler.update()` 呼び出し
+- `Controller`: `set_camera_mode()`, `_on_camera_mode_changed()` コールバック追加
+- `MainWindow.ControlPanel`: `fly_mode_toggled` シグナル、Fly操作説明UI追加
+- FrustumCuller が `paintGL()` 内で部分的に接続（`update_from_camera`、`is_node_visible`）
+- LOD がエッジ描画で部分接続（距離閾値によるエッジ/小キューブスキップ）
 
 ### v1.9.0 (2026-02-09) - メディアプレビュー機能
 
@@ -1553,6 +1685,6 @@ class LayoutConfig:
 
 ---
 
-*仕様書バージョン: 1.9.1*
+*仕様書バージョン: 2.0.0*
 *作成日: 2026-02-07*
-*最終更新: 2026-02-11 (ドキュメントとソースの不一致修正 - ディレクトリ構造更新、未実装機能リスト修正、BackgroundMode削除、ライティング状態整理)*
+*最終更新: 2026-02-11 (Flyモード復活・衝突検出・FrustumCuller/LOD部分接続・ControlPanel Flyトグル・InputHandler update()・Camera Fly操作メソッド追加)*

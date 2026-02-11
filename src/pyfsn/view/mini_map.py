@@ -301,49 +301,62 @@ class MiniMap(QWidget):
 
         # Project camera position to map (top-down, so we use X and Z)
         cam_map_pos = self._world_to_map(pos[0], pos[2])
-        target_map_pos = self._world_to_map(target[0], target[2])
 
         # Calculate frustum outline
         # Get camera direction
         direction = target - pos
-        direction = direction / np.linalg.norm(direction)
+        dir_len = np.linalg.norm(direction)
+        if dir_len < 1e-6:
+            return
+        direction = direction / dir_len
 
-        # Calculate frustum width at a distance
+        # Forward vector (in XZ plane)
+        forward_xz = np.array([direction[0], direction[2]])
+        fwd_len = np.linalg.norm(forward_xz)
+        if fwd_len < 1e-6:
+            return
+        forward_xz = forward_xz / fwd_len
+
+        # Perpendicular vector (for frustum width)
+        perp_xz = np.array([-forward_xz[1], forward_xz[0]])
+
+        # Calculate frustum width at the far distance
         fov_rad = math.radians(camera_state.fov)
-        aspect = 1.0  # Assume square for mini map
-        frustum_height = 2 * math.tan(fov_rad / 2)
+        far_distance = 80.0
+        half_width = far_distance * math.tan(fov_rad / 2)
 
-        # Sample frustum at a few distances
-        frustum_distances = [10.0, 50.0, 100.0]
-        polygon_points = [QPointF(cam_map_pos[0], cam_map_pos[1])]
+        # Camera origin in XZ plane
+        cam_xz = np.array([pos[0], pos[2]])
 
-        for distance in frustum_distances:
-            # Calculate frustum width at this distance
-            half_width = distance * frustum_height * aspect / 2
+        # Calculate far-left and far-right edge points in world XZ
+        far_left_xz = cam_xz + forward_xz * far_distance + perp_xz * (-half_width)
+        far_right_xz = cam_xz + forward_xz * far_distance + perp_xz * half_width
 
-            # Forward vector (in XZ plane)
-            forward_xz = np.array([direction[0], direction[2]])
-            forward_xz = forward_xz / (np.linalg.norm(forward_xz) + 1e-6)
+        # Build frustum triangle: apex (camera) → far-left → far-right
+        apex = QPointF(cam_map_pos[0], cam_map_pos[1])
+        left_map = self._world_to_map(far_left_xz[0], far_left_xz[1])
+        right_map = self._world_to_map(far_right_xz[0], far_right_xz[1])
+        left_pt = QPointF(left_map[0], left_map[1])
+        right_pt = QPointF(right_map[0], right_map[1])
 
-            # Perpendicular vector (for frustum width)
-            perp_xz = np.array([-forward_xz[1], forward_xz[0]])
+        polygon = QPolygonF([apex, left_pt, right_pt])
 
-            # Calculate frustum edge points
-            for sign in [-1, 1]:
-                edge_point_3d = pos[:2] + forward_xz * distance + perp_xz * (sign * half_width)
-                # Project to map coordinates
-                map_x, map_z = self._world_to_map(edge_point_3d[0], edge_point_3d[1])
-                polygon_points.append(QPointF(map_x, map_z))
+        # Clip to the draw rect so frustum doesn't overflow the mini map
+        draw_rect = self._get_draw_rect()
+        painter.save()
+        painter.setClipRect(draw_rect)
 
         # Draw frustum polygon
         painter.setBrush(QBrush(self.FRUSTUM_COLOR))
         painter.setPen(QPen(self.FRUSTUM_COLOR, 1))
-        painter.drawPolygon(QPolygonF(polygon_points))
+        painter.drawPolygon(polygon)
 
         # Draw camera position indicator
         painter.setBrush(self.SELECTED_COLOR)
         painter.setPen(QPen(QColor(255, 255, 255), 1))
         painter.drawEllipse(QPointF(cam_map_pos[0], cam_map_pos[1]), 3, 3)
+
+        painter.restore()
 
     def _draw_zoom_indicator(self, painter: QPainter) -> None:
         """Draw a zoom level indicator.

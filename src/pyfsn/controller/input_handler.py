@@ -10,6 +10,7 @@ from typing import Callable
 
 from PyQt6.QtCore import Qt, QPoint, QTimer
 from PyQt6.QtGui import QKeyEvent, QMouseEvent, QWheelEvent, QKeyEvent
+import numpy as np
 
 from pyfsn.view.camera import Camera, CameraMode
 from pyfsn.model.node import Node
@@ -138,6 +139,9 @@ class InputHandler:
         self._hover_debounce_timer.setSingleShot(True)
         self._hover_debounce_timer.timeout.connect(self._update_hover)
         self._last_hover_pos: QPoint | None = None
+        
+        # Key tracking
+        self._keys_pressed: set[int] = set()
 
     # Public API
 
@@ -226,6 +230,10 @@ class InputHandler:
             else:
                 # Click on background clears selection
                 self._clear_selection()
+        
+        # Always consume Right click to ensure we get drag events
+        elif button == MouseButton.RIGHT:
+            return True
 
         return False
 
@@ -290,7 +298,15 @@ class InputHandler:
                 # Rotate camera (Orbit mode only)
                 if self._camera.mode == CameraMode.ORBIT:
                     self._camera.orbit_rotate(dx, dy)
+                elif self._camera.mode == CameraMode.FLY:
+                    # Allow Left Drag to look in Fly Mode (like Orbit rotate)
+                    self._camera.fly_look(dx, dy)
                 return True
+            else:
+                # Control + Left Drag (fallback for Right Drag)
+                if self._camera.mode == CameraMode.FLY:
+                    self._camera.fly_look(dx, dy)
+                    return True
 
         elif MouseButton.MIDDLE in self._state.mouse_pressed:
             # Pan camera
@@ -304,6 +320,9 @@ class InputHandler:
             if self._camera.mode == CameraMode.ORBIT:
                 w, h = self._renderer.width(), self._renderer.height()
                 self._camera.orbit_pan(dx, dy, w, h)
+            elif self._camera.mode == CameraMode.FLY:
+                # Look around
+                self._camera.fly_look(dx, dy)
             return True
 
         # Handle hover detection (only when not dragging)
@@ -388,7 +407,7 @@ class InputHandler:
         return False
 
     # Keyboard event handlers
-
+    
     def key_press_event(self, event: QKeyEvent) -> bool:
         """Handle key press events.
 
@@ -401,8 +420,22 @@ class InputHandler:
         self._state.update_modifiers(event.modifiers())
 
         key = event.key()
+        
+        
+        # Track keys for Fly Mode
+        if key == Qt.Key.Key_W:
+            self._keys_pressed.add(Qt.Key.Key_W)
+        elif key == Qt.Key.Key_S:
+            self._keys_pressed.add(Qt.Key.Key_S)
+        elif key == Qt.Key.Key_A:
+            self._keys_pressed.add(Qt.Key.Key_A)
+        elif key == Qt.Key.Key_D:
+            self._keys_pressed.add(Qt.Key.Key_D)
+        elif key == Qt.Key.Key_Q:
+            self._keys_pressed.add(Qt.Key.Key_Q)
+        elif key == Qt.Key.Key_E:
+            self._keys_pressed.add(Qt.Key.Key_E)
 
-        # No keyboard controls - all camera control via mouse only
         return False
 
     def key_release_event(self, event: QKeyEvent) -> bool:
@@ -414,8 +447,77 @@ class InputHandler:
         Returns:
             True if event was handled
         """
-        # No keyboard controls - all camera control via mouse only
+        key = event.key()
+        
+        if key in self._keys_pressed:
+            self._keys_pressed.remove(key)
+            
         return False
+        
+    def update(self) -> None:
+        """Process continuous input (called every frame)."""
+        if self._camera.mode != CameraMode.FLY:
+            return
+            
+        dx = 0.0
+        dy = 0.0
+        dz = 0.0
+        
+        if Qt.Key.Key_W in self._keys_pressed:
+            dz += 1.0
+        if Qt.Key.Key_S in self._keys_pressed:
+            dz -= 1.0
+        if Qt.Key.Key_A in self._keys_pressed:
+            dx -= 1.0
+        if Qt.Key.Key_D in self._keys_pressed:
+            dx += 1.0
+        if Qt.Key.Key_Q in self._keys_pressed:
+            dy -= 1.0
+        if Qt.Key.Key_E in self._keys_pressed:
+            dy += 1.0
+            
+        # Sprint with Shift
+        speed_mult = 2.0 if self._state.shift_pressed else 1.0
+        
+        if dx != 0 or dy != 0 or dz != 0:
+            # Calculate full movement vector
+            move_vec = self._camera.get_fly_move_vector(dx, dy, dz, speed_multiplier=speed_mult)
+            current_pos = self._camera.state.position
+            
+            # Helper to try move
+            def try_move(vec):
+                new_pos = current_pos + vec
+                if not self._renderer.check_collision(new_pos):
+                    return True
+                return False
+
+            # Try moving all axes
+            # To allow sliding, we try moving axes independently if full move fails
+            
+            # Simple approach: Check full move first
+            target_pos = current_pos + move_vec.astype(np.float32)
+            if not self._renderer.check_collision(target_pos):
+                self._camera.state.position = target_pos
+            else:
+                # Collision! Try sliding (X+Z plane, then Y)
+                # Or try scalar projection?
+                # Sliding logic:
+                # Try X component
+                move_x = np.array([move_vec[0], 0, 0], dtype=np.float32)
+                if not self._renderer.check_collision(current_pos + move_x):
+                    self._camera.state.position += move_x
+                    current_pos = self._camera.state.position # Update for next check
+
+                # Try Z component
+                move_z = np.array([0, 0, move_vec[2]], dtype=np.float32)
+                if not self._renderer.check_collision(current_pos + move_z):
+                    self._camera.state.position += move_z
+                    current_pos = self._camera.state.position
+
+                # Try Y component
+                move_y = np.array([0, move_vec[1], 0], dtype=np.float32)
+                if not self._renderer.check_collision(current_pos + move_y):
+                    self._camera.state.position += move_y
 
     # Private methods
 

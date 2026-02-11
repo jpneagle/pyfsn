@@ -79,25 +79,36 @@ renderer.set_camera_mode(CameraMode.ORBIT)
 - `get_screen_position(world_position)` - Project world to screen coords
 
 **Optimization Features:**
-- **FrustumCuller**: Implemented in `performance.py`（現状: Rendererには未接続）
-- **LevelOfDetail**: Implemented in `performance.py`（現状: Rendererには未接続）
+- **FrustumCuller**: 部分接続済み（`paintGL` で更新、`is_node_visible` で使用）
+- **LevelOfDetail**: 部分接続済み（エッジ描画の距離スキップ、小キューブスキップ）
 - **Wire Highlighting**: Selected connections are highlighted
 - **Bloom / Emissive**: `SimpleBloom` による発光効果（接続済み）
+- **Collision Detection**: Fly mode の AABB 衝突検出（`check_collision`）
 
 #### `Camera`
-3D camera (Orbit mode only).
+3D camera with Orbit and Fly modes.
 
 ```python
 from pyfsn.view import Camera, CameraMode
 
 camera = Camera()
+
+# Orbit mode (default)
 camera.set_mode(CameraMode.ORBIT)
 camera.orbit_rotate(dx, dy)
 camera.orbit_zoom(delta)
+camera.orbit_pan(dx, dy, width, height)
+
+# Fly mode (FPS-style)
+camera.set_mode(CameraMode.FLY)
+camera.fly_move(dx=0, dy=0, dz=1.0)  # Move forward
+camera.fly_look(dx, dy)  # Look around
+move_vec = camera.get_fly_move_vector(dx, dy, dz, speed_multiplier=2.0)
 ```
 
 **Modes:**
 - `CameraMode.ORBIT` - Rotate around focal point
+- `CameraMode.FLY` - FPS-style movement with WASD + mouse look
 
 #### `MainWindow`
 Main application window with controls and menu bar.
@@ -209,11 +220,11 @@ position = result.positions[str(node.path)]
 
 ### Utilities (`pyfsn.view.performance`)
 
-以下は `pyfsn.view.performance` に存在しますが、現状の Legacy `Renderer` 描画経路には未接続です。将来の `ModernGLRenderer` 統合時に接続予定です。
+`pyfsn.view.performance` に以下のユーティリティが存在します:
 
-- `ProgressiveLoader`: ノードをバッチで段階ロードするユーティリティ
-- `FrustumCuller`: 視錐台カリングのユーティリティ
-- `LevelOfDetail`: 距離ベース LOD のユーティリティ
+- `FrustumCuller`: 視錐台カリング（部分接続済み: `paintGL` 内で `update_from_camera` を呼び、`is_node_visible` で使用）
+- `LevelOfDetail`: 距離ベース LOD（部分接続済み: エッジ描画の距離スキップとして使用）
+- `ProgressiveLoader`: ノードをバッチで段階ロードするユーティリティ（未接続）
 
 #### ProgressiveLoader example
 
@@ -239,8 +250,8 @@ monitor.metrics_updated.connect(lambda metrics: print(f"FPS: {metrics.fps}"))
 
 ## Controls Reference
 
-### Mouse Controls
-- **Left-drag**: Rotate camera (Orbit mode)
+### Mouse Controls (Orbit Mode)
+- **Left-drag**: Rotate camera
 - **Right-drag**: Pan camera
 - **Shift+Left-drag**: Pan camera (macOS trackpad alternative)
 - **Middle-drag**: Pan camera
@@ -249,9 +260,18 @@ monitor.metrics_updated.connect(lambda metrics: print(f"FPS: {metrics.fps}"))
 - **Double-click directory**: Focus on directory
 - **Double-click file**: Open file with default application
 
-### Keyboard Controls
-- 3Dビュー内のキーボード操作（移動/フォーカス/解除など）は現状**未実装**です。
-- 選択解除は背景クリックで行えます。
+### Mouse Controls (Fly Mode)
+- **Left-drag**: Look around (rotate view)
+- **Right-drag**: Look around (rotate view)
+- **Click**: Select node
+- **Double-click**: Navigate/Open
+
+### Keyboard Controls (Fly Mode)
+- **W/S**: Forward / Backward
+- **A/D**: Strafe Left / Right
+- **Q/E**: Down / Up
+- **Shift** (hold): Sprint (2x speed)
+- Flyモードはコントロールパネルのボタンで切り替え。衝突検出あり。
 
 ### Menu Shortcuts
 - **Ctrl+O**: Open directory

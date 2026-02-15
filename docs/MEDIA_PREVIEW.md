@@ -14,10 +14,12 @@ pyfsn includes a media preview feature that displays thumbnails when hovering ov
 
 ### Video Preview
 - **Automatic Detection**: Recognizes 15+ video formats
-- **Smart Thumbnail Extraction**: Extracts frame at 25% of video duration for representative preview
-- **Play Icon Overlay**: Visual indicator distinguishing videos from images
-- **Resolution Display**: Shows video dimensions in the tooltip
+- **Dynamic Scene Preview**: Cycles through 4 scenes (at 10%, 30%, 50%, 70% of duration), ~2 seconds each
+- **Background Thread**: All video I/O runs on a `QThread` (`VideoPlayerThread`) to prevent UI freezes
+- **Non-blocking Cleanup**: Detached threads are kept alive until they finish, preventing crashes on corrupt files
+- **Resolution & Duration Display**: Shows video dimensions, FPS, and duration in the tooltip
 - **Purple-tinted Background**: Visual distinction from image previews
+- **Graceful Error Handling**: Corrupt or unreadable files display an error message without freezing
 
 ## Installation
 
@@ -73,7 +75,7 @@ pip install opencv-python-headless
 | `.mpg`, `.mpeg` | MPEG |
 | `.3gp` | 3GP |
 | `.ogv` | OGG Video |
-| `.ts`, `.m2ts`, `.mts` | MPEG Transport Stream |
+| `.m2ts`, `.mts` | MPEG Transport Stream |
 | `.vob` | DVD Video |
 | `.rm`, `.rmvb` | RealMedia |
 | `.asf` | ASF |
@@ -125,59 +127,68 @@ tooltip.clear_cache()
 ### Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    MainWindow                           │
-│  ┌───────────────────────────────────────────────────┐  │
-│  │              ImagePreviewTooltip                   │  │
-│  │  ┌─────────────────────────────────────────────┐  │  │
-│  │  │  File Detection (Node.is_image_file)        │  │  │
-│  │  └─────────────────────────────────────────────┘  │  │
-│  │  ┌─────────────────────────────────────────────┐  │  │
-│  │  │  Image Loading (QPixmap)                    │  │  │
-│  │  │  - _load_image_if_needed()                  │  │  │
-│  │  │  - Pre-scaling on load                      │  │  │
-│  │  └─────────────────────────────────────────────┘  │  │
-│  │  ┌─────────────────────────────────────────────┐  │  │
-│  │  │  Video Loading (OpenCV - optional)          │  │  │
-│  │  │  - _load_video_thumbnail_if_needed()        │  │  │
-│  │  │  - Frame extraction at 25%                  │  │  │
-│  │  │  - Graceful fallback without OpenCV         │  │  │
-│  │  └─────────────────────────────────────────────┘  │  │
-│  │  ┌─────────────────────────────────────────────┐  │  │
-│  │  │  Rendering (paintEvent)                     │  │  │
-│  │  │  - Text info (name, size, permissions)     │  │  │
-│  │  │  - Preview image with aspect ratio          │  │  │
-│  │  │  - Play icon for videos                     │  │  │
-│  │  └─────────────────────────────────────────────┘  │  │
-│  └───────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│                     MainWindow                           │
+│  ┌────────────────────────────────────────────────────┐  │
+│  │              ImagePreviewTooltip                    │  │
+│  │  ┌──────────────────────────────────────────────┐  │  │
+│  │  │  File Detection (Node.is_image/video_file)   │  │  │
+│  │  └──────────────────────────────────────────────┘  │  │
+│  │  ┌──────────────────────────────────────────────┐  │  │
+│  │  │  Image Loading (QPixmap - main thread)       │  │  │
+│  │  │  - _load_image_if_needed()                   │  │  │
+│  │  │  - Pre-scaling on load                       │  │  │
+│  │  └──────────────────────────────────────────────┘  │  │
+│  │  ┌──────────────────────────────────────────────┐  │  │
+│  │  │  Video Preview (Background QThread)          │  │  │
+│  │  │  - VideoPlayerThread runs cv2 operations     │  │  │
+│  │  │  - Emits frame_ready / info_ready / error    │  │  │
+│  │  │  - 4-scene digest playback                   │  │  │
+│  │  │  - Non-blocking stop & detached cleanup      │  │  │
+│  │  └──────────────────────────────────────────────┘  │  │
+│  │  ┌──────────────────────────────────────────────┐  │  │
+│  │  │  Rendering (paintEvent)                      │  │  │
+│  │  │  - Text info (name, size, permissions)       │  │  │
+│  │  │  - Preview image/video with aspect ratio     │  │  │
+│  │  └──────────────────────────────────────────────┘  │  │
+│  └────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────┘
 ```
 
 ### Performance Considerations
 
 1. **Caching Strategy**
    - Images are loaded and scaled once, then cached
-   - Video thumbnails are extracted once per session
+   - Video frames are streamed from the background thread
    - Cache is keyed by file path
 
 2. **Pre-scaling**
    - Images are pre-scaled to max 320×240 on load
-   - Reduces CPU usage during rendering
+   - Video frames are scaled on receipt from thread
    - Aspect ratio is preserved
 
-3. **Memory Management**
+3. **Thread Safety**
+   - Video I/O runs entirely on `VideoPlayerThread` (QThread)
+   - Communication via Qt signals (`frame_ready`, `info_ready`, `error_occurred`)
+   - Non-blocking stop: `stop()` sets a flag but does not `wait()`
+   - Detached threads are held in `_detached_threads` list to prevent GC crashes
+   - Signals are disconnected before stopping to prevent stale updates
+
+4. **Memory Management**
    - Old cache is cleared when switching files
    - `clear_cache()` method for manual cleanup
-   - QPixmaps are managed by Qt's memory system
+   - Detached threads auto-cleanup via `finished` signal + `deleteLater()`
 
 ### Error Handling
 
 | Scenario | Behavior |
 |----------|----------|
 | OpenCV not installed | Shows "Video (OpenCV not available)" |
-| Unreadable video file | Shows "Video (unreadable)" |
+| Unreadable video file | Shows "Video unreadable" |
+| Corrupt video (e.g. truncated MKV) | Thread detaches gracefully, UI stays responsive |
 | Corrupted image | Shows file info without preview |
 | File not found | Tooltip doesn't appear |
+| Thread stuck in cv2 | Thread is detached; cleaned up when it finishes |
 
 ## Troubleshooting
 
@@ -209,9 +220,10 @@ chmod +r /path/to/file
 
 ## Future Enhancements
 
+- [x] Video duration display
+- [x] Dynamic video scene preview
+- [x] Background thread for video I/O
 - [ ] GIF animation support
-- [ ] Video duration display
 - [ ] Thumbnail size configuration
-- [ ] Multiple thumbnail pages for videos
 - [ ] EXIF data display for images
 - [ ] Codec information for videos

@@ -24,7 +24,7 @@ from PyQt6.QtWidgets import (
     QSplitter,
     QTextEdit,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QThread, QObject
 from PyQt6.QtGui import QAction, QKeyEvent, QPainter, QColor, QFont, QPixmap, QImage
 import sys
 
@@ -32,6 +32,117 @@ from pyfsn.view.renderer import Renderer
 from pyfsn.view.camera import CameraMode
 from pyfsn.view.filter_panel import FilterPanel
 from pyfsn.view.mini_map import MiniMap
+
+class VideoPlayerThread(QThread):
+    """Background thread for video playback to prevent UI freezing."""
+    
+    # Signals to update UI
+    frame_ready = pyqtSignal(QImage)       # Emitted when a new frame is ready
+    info_ready = pyqtSignal(str)           # Emitted when metadata is loaded
+    error_occurred = pyqtSignal(str)       # Emitted on error
+    
+    def __init__(self, path: str, parent=None):
+        super().__init__(parent)
+        self.path = path
+        self._stopped = False
+        self._cv2 = None
+        
+        # Try to import cv2
+        try:
+            import cv2
+            self._cv2 = cv2
+        except ImportError:
+            pass
+
+    def stop(self):
+        """Request thread to stop."""
+        self._stopped = True
+        # Do not wait here, as cv2 might be blocking. Let the thread die naturally.
+        # self.wait() 
+
+    def run(self):
+        """Main thread loop."""
+        if self._cv2 is None:
+            self.error_occurred.emit("OpenCV not available")
+            return
+
+        cap = None
+        try:
+            cap = self._cv2.VideoCapture(self.path)
+            if not cap.isOpened():
+                self.error_occurred.emit("Video unreadable")
+                return
+
+            # Get video info
+            width = int(cap.get(self._cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(self._cv2.CAP_PROP_FRAME_HEIGHT))
+            frame_count = int(cap.get(self._cv2.CAP_PROP_FRAME_COUNT))
+            fps = cap.get(self._cv2.CAP_PROP_FPS)
+
+            if frame_count <= 0 or fps <= 0:
+                self.info_ready.emit(f"{width}×{height} px (stream)")
+                return
+
+            duration = frame_count / fps
+            minutes = int(duration // 60)
+            secs = int(duration % 60)
+            self.info_ready.emit(f"{width}×{height} px @ {fps:.1f}fps ({minutes}:{secs:02d})")
+
+            # Scene setup
+            scene_points = [
+                int(frame_count * 0.1),
+                int(frame_count * 0.3),
+                int(frame_count * 0.5),
+                int(frame_count * 0.7)
+            ]
+            frames_per_scene = int(fps * 2.0)
+            
+            current_scene_idx = 0
+            frames_in_scene = 0
+            
+            # Initial seek
+            cap.set(self._cv2.CAP_PROP_POS_FRAMES, scene_points[0])
+
+            # Playback loop
+            while not self._stopped:
+                ret, frame = cap.read()
+                
+                if ret and frame is not None:
+                    # Convert to RGB QImage
+                    frame_rgb = self._cv2.cvtColor(frame, self._cv2.COLOR_BGR2RGB)
+                    h, w, ch = frame_rgb.shape
+                    bytes_per_line = 3 * w
+                    q_img = QImage(
+                        frame_rgb.data,
+                        w,
+                        h,
+                        bytes_per_line,
+                        QImage.Format.Format_RGB888
+                    )
+                    # Copy image data because buffer will be invalidated when loop continues
+                    self.frame_ready.emit(q_img.copy())
+
+                    frames_in_scene += 1
+                    if frames_in_scene >= frames_per_scene:
+                        # Switch scene
+                        current_scene_idx = (current_scene_idx + 1) % len(scene_points)
+                        frames_in_scene = 0
+                        cap.set(self._cv2.CAP_PROP_POS_FRAMES, scene_points[current_scene_idx])
+                    
+                    # Wait to maintain approx FPS (simplified)
+                    self.msleep(33)
+                else:
+                    # Error or EOF, skip to next scene
+                    current_scene_idx = (current_scene_idx + 1) % len(scene_points)
+                    frames_in_scene = 0
+                    cap.set(self._cv2.CAP_PROP_POS_FRAMES, scene_points[current_scene_idx])
+                    self.msleep(100) # Wait a bit before retry
+
+        except Exception as e:
+            self.error_occurred.emit(f"Error: {str(e)}")
+        finally:
+            if cap:
+                cap.release()
 
 
 class TextOverlay(QWidget):
@@ -313,14 +424,14 @@ class FileTooltipOverlay(QWidget):
             painter.drawText(x + padding, text_y, line)
 
 
+
 class ImagePreviewTooltip(FileTooltipOverlay):
     """Enhanced tooltip with image preview and video thumbnails.
 
     When hovering over an image file, shows a preview of the image.
-    When hovering over a video file, shows a thumbnail from the video with a play icon overlay.
-    Also displays standard file information.
-
-    Video thumbnails are generated using OpenCV (optional dependency).
+    When hovering over a video file, shows a dynamic digest preview.
+    
+    Video preview uses a background thread to prevent UI freezing.
     """
 
     # Maximum size for image preview
@@ -342,11 +453,15 @@ class ImagePreviewTooltip(FileTooltipOverlay):
         self._scaled_pixmap: QPixmap | None = None  # Cached scaled preview
         self._is_video: bool = False  # Whether current preview is from video
 
-        # Try to import OpenCV for video thumbnails (optional dependency)
-        self._cv2 = None
+        # Video playback thread
+        self._video_thread: VideoPlayerThread | None = None
+        self._detached_threads: list[VideoPlayerThread] = []  # prevent GC of running threads
+
+        # Try to import OpenCV check (just for static check, logic is in thread)
+        self._cv2_available = False
         try:
             import cv2
-            self._cv2 = cv2
+            self._cv2_available = True
         except ImportError:
             pass
 
@@ -363,11 +478,13 @@ class ImagePreviewTooltip(FileTooltipOverlay):
 
         # Check file type and load appropriate preview
         if hasattr(node, 'is_image_file') and node.is_image_file:
+            self._stop_video()
             self._load_image_if_needed(node)
         elif hasattr(node, 'is_video_file') and node.is_video_file:
-            self._load_video_thumbnail_if_needed(node)
+            self._load_video_preview(node)
         else:
             # Clear cached preview for other file types
+            self._stop_video()
             self._cached_pixmap = None
             self._scaled_pixmap = None
             self._media_info = None
@@ -387,7 +504,8 @@ class ImagePreviewTooltip(FileTooltipOverlay):
         # Check if we need to reload
         if self._cached_path == path_str and self._cached_pixmap is not None and not self._is_video:
             return
-
+        
+        # ... image loading logic (unchanged) ...
         try:
             # Load image using QPixmap
             self._cached_pixmap = QPixmap(str(node.path))
@@ -429,93 +547,87 @@ class ImagePreviewTooltip(FileTooltipOverlay):
             Qt.TransformationMode.SmoothTransformation
         )
 
-    def _load_video_thumbnail_if_needed(self, node) -> None:
-        """Load and cache a video thumbnail if not already cached.
-
-        Extracts a frame from the video at 25% position to get a representative thumbnail.
-
-        Args:
-            node: Video Node to generate thumbnail for
-        """
+    def _load_video_preview(self, node) -> None:
+        """Start video playback in background thread."""
         path_str = str(node.path)
 
-        # Check if we need to reload
-        if self._cached_path == path_str and self._cached_pixmap is not None and self._is_video:
+        # Check if we are already playing this video
+        if self._cached_path == path_str and self._is_video and self._video_thread:
             return
 
+        self._stop_video()
         self._is_video = False
         self._cached_pixmap = None
         self._scaled_pixmap = None
-        self._media_info = None
+        self._media_info = "Loading..."
 
-        # Check if OpenCV is available
-        if self._cv2 is None:
+        if not self._cv2_available:
             self._media_info = "Video (OpenCV not available)"
             self._cached_path = path_str
             return
 
+        # Start background thread
+        self._video_thread = VideoPlayerThread(path_str, self)
+        self._video_thread.frame_ready.connect(self._on_video_frame)
+        self._video_thread.info_ready.connect(self._on_video_info)
+        self._video_thread.error_occurred.connect(self._on_video_error)
+        self._video_thread.start()
+        
+        self._is_video = True
+        self._cached_path = path_str
+
+    def _on_video_frame(self, image: QImage) -> None:
+        """Handle new frame from video thread."""
+        self._cached_pixmap = QPixmap.fromImage(image)
+        self._scaled_pixmap = self._scale_preview(self._cached_pixmap)
+        self.update()
+
+    def _on_video_info(self, info: str) -> None:
+        """Handle video info update."""
+        self._media_info = info
+        self.update()
+
+    def _on_video_error(self, error: str) -> None:
+        """Handle video error."""
+        self._media_info = error
+        self.update()
+
+    def _stop_video(self) -> None:
+        """Stop video playback and release resources."""
+        if self._video_thread:
+            thread = self._video_thread
+            self._video_thread = None
+
+            # Disconnect signals to prevent any updates after we decided to stop
+            try:
+                thread.frame_ready.disconnect()
+                thread.info_ready.disconnect()
+                thread.error_occurred.disconnect()
+            except TypeError:
+                pass  # Signals might not be connected or already disconnected
+
+            thread.stop()
+
+            if thread.isRunning():
+                # Thread is still running (e.g. stuck in cv2 read).
+                # Keep a reference so Python doesn't GC the QThread while it's alive.
+                self._detached_threads.append(thread)
+                thread.finished.connect(lambda t=thread: self._cleanup_thread(t))
+            # else: thread already finished, nothing to do
+
+    def _cleanup_thread(self, thread: VideoPlayerThread) -> None:
+        """Remove a finished thread from the detached list."""
         try:
-            # Open video file
-            cap = self._cv2.VideoCapture(str(node.path))
+            self._detached_threads.remove(thread)
+        except ValueError:
+            pass
+        thread.deleteLater()
 
-            if not cap.isOpened():
-                self._media_info = "Video (unreadable)"
-                self._cached_path = path_str
-                return
+    def hide_tooltip(self) -> None:
+        """Hide tooltip and stop video."""
+        self._stop_video()
+        super().hide_tooltip()
 
-            # Get video properties
-            width = int(cap.get(self._cv2.CAP_PROP_FRAME_WIDTH))
-            height = int(cap.get(self._cv2.CAP_PROP_FRAME_HEIGHT))
-            frame_count = int(cap.get(self._cv2.CAP_PROP_FRAME_COUNT))
-            fps = cap.get(self._cv2.CAP_PROP_FPS)
-
-            # Seek to 25% of video to get a representative frame
-            target_frame = int(frame_count * 0.25) if frame_count > 0 else 0
-            cap.set(self._cv2.CAP_PROP_POS_FRAMES, target_frame)
-
-            # Read frame
-            ret, frame = cap.read()
-            cap.release()
-
-            if ret and frame is not None:
-                # Convert BGR to RGB
-                frame_rgb = self._cv2.cvtColor(frame, self._cv2.COLOR_BGR2RGB)
-
-                # Create QPixmap from numpy array
-                h, w, ch = frame_rgb.shape
-                bytes_per_line = 3 * w
-                q_img = QImage(
-                    frame_rgb.data,
-                    w,
-                    h,
-                    bytes_per_line,
-                    QImage.Format.Format_RGB888
-                )
-                self._cached_pixmap = QPixmap.fromImage(q_img)
-
-                if not self._cached_pixmap.isNull():
-                    duration_str = ""
-                    if frame_count > 0 and fps > 0:
-                        duration = frame_count / fps
-                        minutes = int(duration // 60)
-                        secs = int(duration % 60)
-                        duration_str = f" ({minutes}:{secs:02d})"
-
-                    self._media_info = f"{width}×{height} px @ {fps:.1f}fps{duration_str}"
-                    self._scaled_pixmap = self._scale_preview(self._cached_pixmap)
-                    self._is_video = True
-                    self._cached_path = path_str
-                else:
-                    self._media_info = f"{width}×{height} px @ {fps:.1f}fps"
-            else:
-                self._media_info = f"{width}×{height} px (no thumbnail)"
-
-            self._cached_path = path_str
-
-        except Exception:
-            # Failed to load video
-            self._media_info = "Video (thumbnail error)"
-            self._cached_path = path_str
 
     def paintEvent(self, event) -> None:
         """Paint the tooltip with optional image/video preview."""
@@ -614,24 +726,6 @@ class ImagePreviewTooltip(FileTooltipOverlay):
                               preview_width + 2, preview_height + 2)
 
             painter.drawPixmap(preview_x, current_y + text_padding, self._scaled_pixmap)
-
-            # Draw play icon overlay for videos
-            if self._is_video:
-                cx = preview_x + preview_width // 2
-                cy = current_y + text_padding + preview_height // 2
-                play_size = 24
-
-                # Draw play triangle
-                painter.setBrush(QColor(255, 255, 255, 220))
-                painter.setPen(Qt.PenStyle.NoPen)
-                from PyQt6.QtCore import QPointF
-                from PyQt6.QtGui import QPolygonF
-                triangle = QPolygonF([
-                    QPointF(cx - play_size // 3, cy - play_size // 2),
-                    QPointF(cx - play_size // 3, cy + play_size // 2),
-                    QPointF(cx + play_size // 2, cy),
-                ])
-                painter.drawPolygon(triangle)
 
             current_y += preview_height + preview_padding
 

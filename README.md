@@ -24,7 +24,7 @@ pyfsn provides an immersive 3D visualization of your file system. Directories ap
 - **Wire Connections**: Visual parent-child relationships between directories
 - **File Age Colors**: Color-coded by modification time (SGI fsn style)
 - **File Tree View**: Traditional hierarchical view alongside 3D visualization
-- **Media Previews**: Hover over image and video files to see thumbnails
+- **Media Previews**: Hover over image files for thumbnails; video files show dynamic 4-scene digest playback (background threaded)
 - **Theme System**: Multiple themes (SGI Classic, Dark Mode, Cyberpunk, Solarized, etc.)
 - **Bloom & Emissive Effects**: File type-based glow effects and animated wire pulses
 - **2D Mini Map**: Radar-style overview of the 3D scene
@@ -119,7 +119,7 @@ The pyfsn window consists of:
 | **Double-click File** | Opens in default app | Open file with system default application |
 | **Directory Name (Ground)** | Handwritten text on ground | SGI fsn style directory label |
 | **File Names** | Always visible | File names shown next to files |
-| **Hover Image/Video** | Tooltip with preview | Shows thumbnail for images and videos |
+| **Hover Image/Video** | Tooltip with preview | Shows thumbnail for images, dynamic scene playback for videos |
 
 ### Controls Reference
 

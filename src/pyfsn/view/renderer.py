@@ -139,13 +139,13 @@ class Renderer(QOpenGLWidget):
         if age_days < 1:           # Less than 24 hours
             return np.array([0.2, 1.0, 0.2, 1.0], dtype=np.float32)  # Bright green
         elif age_days < 7:         # Less than 1 week
-            return np.array([0.2, 0.8, 1.0, 1.0], dtype=np.float32)  # Cyan
+            return np.array([0.3, 0.9, 1.0, 1.0], dtype=np.float32)  # Cyan/Sky blue
         elif age_days < 30:        # Less than 1 month
-            return np.array([0.8, 0.8, 0.2, 1.0], dtype=np.float32)  # Yellow
+            return np.array([0.9, 0.9, 0.1, 1.0], dtype=np.float32)  # Bright Yellow
         elif age_days < 365:       # Less than 1 year
-            return np.array([1.0, 0.6, 0.2, 1.0], dtype=np.float32)  # Orange
+            return np.array([1.0, 0.5, 0.1, 1.0], dtype=np.float32)  # Orange
         else:                      # More than 1 year
-            return np.array([0.6, 0.3, 0.2, 1.0], dtype=np.float32)  # Brown
+            return np.array([0.7, 0.2, 0.1, 1.0], dtype=np.float32)  # Reddish Brown
 
     def _calculate_emission(self, node: Node) -> float:
         """Calculate emission intensity based on file type and git status.
@@ -194,6 +194,22 @@ class Renderer(QOpenGLWidget):
             emission += 0.3
 
         return min(emission, 1.0)
+
+    def _calculate_pedestal_height(self, node: Node) -> float:
+        """Calculate pedestal height based on directory content size (FSN style).
+
+        In original FSN, pedestal height = total file sizes in directory.
+        Uses logarithmic scale for visual clarity.
+        """
+        total_size = node.total_size
+        if total_size <= 0:
+            return 0.3  # Minimum height for empty directories
+
+        # Logarithmic scale: 1KB ≈ 3, 1MB ≈ 6, 1GB ≈ 9
+        log_size = math.log10(max(total_size, 1))
+        # Scale: 1KB -> ~0.9, 1MB -> ~1.5, 1GB -> ~2.1
+        height = 0.3 + log_size * 0.2
+        return min(max(height, 0.3), 3.0)
 
     def initializeGL(self) -> None:
         """Initialize OpenGL resources."""
@@ -290,22 +306,22 @@ class Renderer(QOpenGLWidget):
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
 
         ground_size = 500.0
-        ground_y = -0.5  # Just below y=0
+        ground_y = -0.01  # Just below y=0 labels
 
-        # Ground plane (green, large)
+        # Ground plane (Rich green gradient, FSN grass-like)
         glBegin(GL_QUADS)
-        glColor4f(0.2, 0.4, 0.2, 0.9)  # Dark green
+        glColor4f(0.25, 0.5, 0.25, 1.0)  # Near green
         glVertex3f(-ground_size, ground_y, -ground_size)
         glVertex3f(ground_size, ground_y, -ground_size)
-        glColor4f(0.15, 0.35, 0.15, 0.9)  # Darker green (gradient)
+        glColor4f(0.18, 0.4, 0.18, 1.0)  # Far green (gradient)
         glVertex3f(ground_size, ground_y, ground_size)
         glVertex3f(-ground_size, ground_y, ground_size)
         glEnd()
 
-        # Grid lines
+        # Grid lines - more subtle and sparser
         glLineWidth(1.0)
-        glColor4f(0.3, 0.5, 0.3, 0.5)  # Semi-transparent green
-        grid_spacing = 20.0
+        glColor4f(0.28, 0.48, 0.28, 0.25)  # Very subtle grid
+        grid_spacing = 40.0
         grid_range = 10
 
         glBegin(GL_LINES)
@@ -518,7 +534,7 @@ class Renderer(QOpenGLWidget):
         glEnd()
 
     def _draw_cube(self, cube: CubeInstance) -> None:
-        """Draw a single cube with emission-based glow."""
+        """Draw a single cube with emission-based glow and 3D face shading."""
         x, y, z = cube.position
         w, h, d = cube.scale
         r, g, b, a = cube.color
@@ -526,44 +542,56 @@ class Renderer(QOpenGLWidget):
         # Apply emission-based glow effect
         r, g, b, a = self._bloom.apply_glow(r, g, b, a, cube.emission)
 
+        # Per-face shading factors (simulate simple directional lighting)
+        top_f = 1.0     # Top face: brightest
+        front_f = 0.85  # Front face: slightly dimmer
+        side_f = 0.7    # Side faces: medium
+        back_f = 0.55   # Back face: darker
+        bottom_f = 0.4  # Bottom face: darkest
+
         glPushMatrix()
         glTranslatef(x, y, z)
         glScalef(w, h, d)
-        glColor4f(r, g, b, a)
 
         # Draw cube faces
         glBegin(GL_QUADS)
         # Front face
+        glColor4f(r * front_f, g * front_f, b * front_f, a)
         glNormal3f(0, 0, 1)
         glVertex3f(-0.5, -0.5, 0.5)
         glVertex3f(0.5, -0.5, 0.5)
         glVertex3f(0.5, 0.5, 0.5)
         glVertex3f(-0.5, 0.5, 0.5)
         # Back face
+        glColor4f(r * back_f, g * back_f, b * back_f, a)
         glNormal3f(0, 0, -1)
         glVertex3f(0.5, -0.5, -0.5)
         glVertex3f(-0.5, -0.5, -0.5)
         glVertex3f(-0.5, 0.5, -0.5)
         glVertex3f(0.5, 0.5, -0.5)
         # Top face
+        glColor4f(r * top_f, g * top_f, b * top_f, a)
         glNormal3f(0, 1, 0)
         glVertex3f(-0.5, 0.5, 0.5)
         glVertex3f(0.5, 0.5, 0.5)
         glVertex3f(0.5, 0.5, -0.5)
         glVertex3f(-0.5, 0.5, -0.5)
         # Bottom face
+        glColor4f(r * bottom_f, g * bottom_f, b * bottom_f, a)
         glNormal3f(0, -1, 0)
         glVertex3f(-0.5, -0.5, -0.5)
         glVertex3f(0.5, -0.5, -0.5)
         glVertex3f(0.5, -0.5, 0.5)
         glVertex3f(-0.5, -0.5, 0.5)
         # Right face
+        glColor4f(r * side_f, g * side_f, b * side_f, a)
         glNormal3f(1, 0, 0)
         glVertex3f(0.5, -0.5, 0.5)
         glVertex3f(0.5, -0.5, -0.5)
         glVertex3f(0.5, 0.5, -0.5)
         glVertex3f(0.5, 0.5, 0.5)
         # Left face
+        glColor4f(r * side_f, g * side_f, b * side_f, a)
         glNormal3f(-1, 0, 0)
         glVertex3f(-0.5, -0.5, -0.5)
         glVertex3f(-0.5, -0.5, 0.5)
@@ -722,9 +750,20 @@ class Renderer(QOpenGLWidget):
 
         glLineWidth(1.5)
 
-        # Dark edge color - computed from cube color but darker
+        # Dark edge color - computed from cube color
         r, g, b, a = cube.color
-        edge_color = [r * 0.3, g * 0.3, b * 0.3, a]
+        
+        # Check if this is a platform (pedestal)
+        # Platforms have distinct edge behavior in FSN (brighter/outlined)
+        is_platform = cube.scale[1] < 1.0 and cube.scale[0] > 2.0
+        
+        if is_platform:
+            # Highlight edges for pedestals (bright blue/white tint)
+            edge_color = [min(1.0, r * 1.3), min(1.0, g * 1.3), min(1.0, b * 1.3), a]
+        else:
+            # Standard dark edges for file cubes
+            edge_color = [r * 0.3, g * 0.3, b * 0.3, a]
+            
         glColor4fv(edge_color)
 
         glPushMatrix()
@@ -796,15 +835,17 @@ class Renderer(QOpenGLWidget):
             node = nodes[path_str]
 
             if node.type == NodeType.DIRECTORY:
-                # Platforms (Directories) - Size calculated by LayoutEngine (Feature 4)
+                # Platforms (Directories) - Size calculated by LayoutEngine
                 platform_w = position.width
                 platform_d = position.depth
                 
-                height = 0.2  # Thin platform
+                # FSN style: pedestal height proportional to content size (Phase 2)
+                height = self._calculate_pedestal_height(node)
                 
+                # "Grow Up" model: Base at y=0, extends upwards
                 pos_array = np.array([
                     position.x + position.width / 2,
-                    -height / 2,  # Top of platform is at y=0
+                    height / 2,  # Center is at radius (height/2) above ground (0)
                     position.z + position.depth / 2,
                 ], dtype=np.float32)
 
@@ -832,10 +873,15 @@ class Renderer(QOpenGLWidget):
                 # File blocks - height from layout engine (SGI fsn style)
                 height = position.height
 
-                # Position files on top of y=0 (where platform top is)
+                # Calculate parent pedestal height to place file on top
+                parent_height = 0.0
+                if node.parent and self._calculate_pedestal_height:
+                     parent_height = self._calculate_pedestal_height(node.parent)
+
+                # Position files on top of parent pedestal
                 pos_array = np.array([
                     position.x + position.width / 2,
-                    height / 2,
+                    parent_height + height / 2,
                     position.z + position.depth / 2,
                 ], dtype=np.float32)
 
@@ -882,17 +928,17 @@ class Renderer(QOpenGLWidget):
                 # Connect Back Edge of Parent to Front Edge of Child
                 # Parent is "in front" (larger Z), Child is "behind" (smaller/more negative Z)
                 # We connect Parent Min Z to Child Max Z
-                # Height: Connect at center of platform height (y = -0.1, assuming height 0.2)
+                # Height: Connect along the ground (y = 0.05) to be visible above ground plane
                 
                 start_pos = np.array([
                     parent_pos.x + parent_pos.width / 2,
-                    -0.1,
+                    0.05,
                     parent_pos.z  # Back face (Min Z)
                 ], dtype=np.float32)
                 
                 end_pos = np.array([
                     child_pos.x + child_pos.width / 2,
-                    -0.1,
+                    0.05,
                     child_pos.z + child_pos.depth  # Front face (Max Z)
                 ], dtype=np.float32)
                 
@@ -996,16 +1042,37 @@ class Renderer(QOpenGLWidget):
 
             node = nodes[path_str]
 
-            # Get AABB bounds - match actual rendered positions
+            # Get AABB bounds - match actual rendered positions (Grow Up model)
             if node.is_directory:
-                # Platform: rendered at y = -height/2 (top at y=0)
-                platform_h = 0.2
-                min_y = -platform_h / 2
-                max_y = platform_h / 2
+                # Platform: rendered from y=0 upwards
+                # Height is calculated by _calculate_pedestal_height
+                height = self._calculate_pedestal_height(node)
+                
+                min_y = 0.0
+                max_y = height
+                
+                # Platform width/depth from layout position
+                min_x = position.x
+                max_x = position.x + position.width
+                min_z = position.z
+                max_z = position.z + position.depth
+                
+                min_bounds = np.array([min_x, min_y, min_z], dtype=np.float32)
+                max_bounds = np.array([max_x, max_y, max_z], dtype=np.float32)
+
             else:
-                # File: rendered at y = height/2 (centered on platform top)
-                # AABB should match the rendered cube position
+                # File: rendered on top of parent pedestal
                 height = position.height
+                
+                # Calculate parent pedestal height to determine base Y
+                parent_height = 0.0
+                if node.parent and self._calculate_pedestal_height:
+                     parent_height = self._calculate_pedestal_height(node.parent)
+                
+                min_y = parent_height
+                max_y = parent_height + height
+                
+                # File width/depth (scaled by 0.8 as in load_layout)
                 width_scaled = position.width * 0.8
                 depth_scaled = position.depth * 0.8
 
@@ -1013,16 +1080,9 @@ class Renderer(QOpenGLWidget):
                 max_x = min_x + width_scaled
                 min_z = position.z + (position.depth - depth_scaled) / 2
                 max_z = min_z + depth_scaled
-                min_y = 0.0  # File cube base at y=0
-                max_y = height  # File cube top at y=height
 
                 min_bounds = np.array([min_x, min_y, min_z], dtype=np.float32)
                 max_bounds = np.array([max_x, max_y, max_z], dtype=np.float32)
-
-            if node.is_directory:
-                # Directory bounds (platform)
-                min_bounds = np.array([position.min_x, -0.1, position.min_z], dtype=np.float32)
-                max_bounds = np.array([position.max_x, 0.1, position.max_z], dtype=np.float32)
 
             # Ray-AABB intersection
             t = self._ray_aabb_intersect(ray_origin, ray_dir, min_bounds, max_bounds)

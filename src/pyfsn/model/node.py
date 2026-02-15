@@ -135,10 +135,11 @@ class Node:
         suffix = self.path.suffix.lower()
 
         # Common video file extensions
+        # Note: .ts excluded due to conflict with TypeScript files
         video_extensions = {
             '.mp4', '.avi', '.mkv', '.mov', '.wmv',
             '.flv', '.webm', '.m4v', '.mpg', '.mpeg',
-            '.3gp', '.ogv', '.ts', '.m2ts', '.mts',
+            '.3gp', '.ogv', '.m2ts', '.mts',
             '.vob', '.rm', '.rmvb', '.asf', '.divx',
             '.xvid', '.f4v', '.mxf', '.qt',
         }

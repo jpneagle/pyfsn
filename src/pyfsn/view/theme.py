@@ -54,11 +54,11 @@ class Theme:
 # SGI Classic theme - matches the original fsn aesthetic
 SGI_CLASSIC = Theme(
     name="SGI Classic",
-    background_color=(0.3, 0.5, 0.9, 1.0),  # Medium blue sky
-    platform_color=(0.2, 0.6, 1.0, 1.0),   # Bright blue platforms
-    wire_color=(1.0, 1.0, 1.0, 0.4),       # Semi-transparent white wires
-    selection_color=(1.0, 1.0, 0.3, 1.0),  # Yellow selection
-    spotlight_color=(1.0, 1.0, 0.8, 0.2),  # Pale yellow spotlight
+    background_color=(0.35, 0.55, 0.95, 1.0),  # Brighter blue sky
+    platform_color=(0.25, 0.55, 0.85, 1.0),    # More muted blue (pedestal color)
+    wire_color=(1.0, 1.0, 1.0, 0.6),           # More visible white wires
+    selection_color=(1.0, 1.0, 0.3, 1.0),      # Yellow selection
+    spotlight_color=(1.0, 1.0, 0.8, 0.2),      # Pale yellow spotlight
     enable_bloom=False,
     enable_grid=True,
     fog_color=(0.1, 0.1, 0.15, 1.0),

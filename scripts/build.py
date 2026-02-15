@@ -68,18 +68,25 @@ def main():
     else:
         build_dir.mkdir(parents=True, exist_ok=True)
 
-    # 4. Prepare icon (convert png to ico for Windows)
-    icon_src = root_dir / "src" / "pyfsn" / "icon.png"
-    icon_ico = build_dir / "icon.ico"
+    # 4. Prepare icon
+    icon_src_png = root_dir / "src" / "pyfsn" / "icon.png"
+    icon_src_ico = root_dir / "src" / "pyfsn" / "icon.ico"
+    icon_dest_ico = build_dir / "icon.ico"
     
-    if icon_src.exists():
+    # Priority:
+    # 1. Existing .ico in src
+    # 2. Convert .png in src to .ico in build
+    if icon_src_ico.exists():
+        print(f"Using existing icon: {icon_src_ico}")
+        shutil.copy2(icon_src_ico, icon_dest_ico)
+    elif icon_src_png.exists():
         print("Converting icon to .ico for Windows...")
         # Convert using Pillow inside the venv
         convert_script = f"""
 from PIL import Image
 try:
-    img = Image.open(r'{icon_src}')
-    img.save(r'{icon_ico}', format='ICO', sizes=[(256, 256), (128, 128), (64, 64), (48, 48), (32, 32), (16, 16)])
+    img = Image.open(r'{icon_src_png}')
+    img.save(r'{icon_dest_ico}', format='ICO', sizes=[(256, 256), (128, 128), (64, 64), (48, 48), (32, 32), (16, 16)])
     print("Icon converted.")
 except Exception as e:
     print(f"Icon conversion failed: {{e}}")
@@ -87,24 +94,41 @@ except Exception as e:
         subprocess.check_call([str(python_exe), "-c", convert_script])
 
     # 5. Build with PyInstaller
-    print("Building executable...")
+    print(f"Building executable for {sys.platform}...")
     
     cmd = [
         str(python_exe), "-m", "PyInstaller",
         "--name", "pyfsn",
-        "--onefile",
         "--noconsole",
         "--clean",
         "--distpath", str(build_dir),
         "--workpath", str(build_dir / "work"),
         "--specpath", str(build_dir / "spec"),
     ]
+
+    # Mode adjustment: macOS works better with --onedir (bundled in .app)
+    # Windows/Linux work well with --onefile
+    if sys.platform == "darwin":
+        cmd.append("--onedir")
+    else:
+        cmd.append("--onefile")
+
+    # Bundle icons as data
+    # Format: src:dest (Windows uses ; Mac/Linux uses :)
+    sep = os.pathsep
+    icon_png = root_dir / "src" / "pyfsn" / "icon.png"
+    icon_ico = root_dir / "src" / "pyfsn" / "icon.ico"
     
+    if icon_png.exists():
+        cmd.extend(["--add-data", f"{icon_png}{sep}pyfsn"])
     if icon_ico.exists():
-        cmd.extend(["--icon", str(icon_ico)])
-    elif icon_src.exists() and sys.platform != "win32":
+        cmd.extend(["--add-data", f"{icon_ico}{sep}pyfsn"])
+    
+    if icon_dest_ico.exists():
+        cmd.extend(["--icon", str(icon_dest_ico)])
+    elif icon_src_png.exists() and sys.platform != "win32":
         # Use png on non-windows if ico not made
-        cmd.extend(["--icon", str(icon_src)])
+        cmd.extend(["--icon", str(icon_src_png)])
     
     # Entry point
     cmd.append(str(root_dir / "src" / "pyfsn" / "__main__.py"))

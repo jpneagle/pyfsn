@@ -113,6 +113,18 @@ def main() -> int:
     # Set application icon
     from PyQt6.QtGui import QIcon
     icon_path = Path(__file__).parent / "icon.png"
+    
+    # Handle PyInstaller bundled resources
+    if hasattr(sys, '_MEIPASS'):
+        # Check for bundled icon in the extracted resource directory
+        bundled_icon = Path(sys._MEIPASS) / "pyfsn" / "icon.png"
+        if bundled_icon.exists():
+            icon_path = bundled_icon
+        else:
+            bundled_icon_ico = Path(sys._MEIPASS) / "pyfsn" / "icon.ico"
+            if bundled_icon_ico.exists():
+                icon_path = bundled_icon_ico
+
     if icon_path.exists():
         app.setWindowIcon(QIcon(str(icon_path)))
 

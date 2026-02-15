@@ -43,7 +43,7 @@ pyfsn provides an immersive 3D visualization of your file system. Directories ap
 ### Install from source
 
 ```bash
-git clone https://github.com/yourusername/pyfsn.git
+git clone https://github.com/jpneagle/pyfsn.git
 cd pyfsn
 pip install -e .
 ```

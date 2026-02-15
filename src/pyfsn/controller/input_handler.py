@@ -55,7 +55,7 @@ class InputState:
         if self.mouse_drag_start is None:
             self.mouse_drag_start = QPoint(0, 0)
 
-    def update_modifiers(self, modifiers: Qt.KeyboardModifiers) -> None:
+    def update_modifiers(self, modifiers: Qt.KeyboardModifier) -> None:
         """Update modifier state from Qt modifiers."""
         self.modifiers.clear()
         if modifiers & Qt.KeyboardModifier.ShiftModifier:

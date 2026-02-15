@@ -110,6 +110,12 @@ def main() -> int:
     # Create Qt application
     app = QApplication(sys.argv)
 
+    # Set application icon
+    from PyQt6.QtGui import QIcon
+    icon_path = Path(__file__).parent / "icon.png"
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
+
     # Configure OpenGL surface format based on renderer choice
     from PyQt6.QtGui import QSurfaceFormat
     fmt = QSurfaceFormat()

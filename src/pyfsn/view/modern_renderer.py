@@ -1492,6 +1492,41 @@ class ModernGLRenderer(QOpenGLWidget):
         if not self._update_timer.isActive():
             self._update_timer.start(16)
 
+    def check_collision(self, position: np.ndarray, radius: float = 0.5) -> bool:
+        """Check if a position collides with any geometry.
+
+        Args:
+            position: Position to check [x, y, z]
+            radius: Radius of the object (camera)
+
+        Returns:
+            True if collision detected
+        """
+        # Ground plane is at y=-0.5; keep camera above ground surface + radius
+        if position[1] < -0.5 + radius:
+            return True
+
+        # Helper for AABB overlap with margin
+        def check_aabb(pos, box_pos, box_scale, margin):
+            box_min = box_pos - box_scale * 0.5 - margin
+            box_max = box_pos + box_scale * 0.5 + margin
+            return (pos[0] >= box_min[0] and pos[0] <= box_max[0] and
+                    pos[1] >= box_min[1] and pos[1] <= box_max[1] and
+                    pos[2] >= box_min[2] and pos[2] <= box_max[2])
+
+        margin = np.full(3, radius, dtype=np.float32)
+
+        for platform in self._platforms:
+            if check_aabb(position, platform.position, platform.scale, margin):
+                return True
+
+        if position[1] < 20.0:
+            for cube in self._cubes:
+                if check_aabb(position, cube.position, cube.scale, margin):
+                    return True
+
+        return False
+
     def _get_node_at_target(self, target: np.ndarray) -> Node | None:
         """Get node closest to target position.
 

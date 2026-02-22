@@ -192,6 +192,10 @@ class Camera:
         pan_y = dy * pan_speed * up
 
         self._state.target += pan_x + pan_y
+
+        # Clamp target above ground plane
+        self._state.target[1] = max(self._state.target[1], self.GROUND_Y)
+
         self._update_position_from_orbit()
         
     def get_fly_move_vector(self, dx: float, dy: float, dz: float, speed_multiplier: float = 1.0) -> np.ndarray:
@@ -258,8 +262,22 @@ class Camera:
         max_pitch = math.radians(89.0)
         self._fly_pitch = max(-max_pitch, min(max_pitch, self._fly_pitch))
 
+    # Ground plane Y and camera collision radius (must match renderer constants)
+    GROUND_Y: float = -0.5
+    CAMERA_RADIUS: float = 0.5
+
     def _update_position_from_orbit(self) -> None:
         """Update camera position from orbit parameters."""
+        # Clamp pitch so that the camera never goes below ground.
+        # Camera Y = target.y + distance * sin(pitch) >= GROUND_Y + CAMERA_RADIUS
+        # => sin(pitch) >= (GROUND_Y + CAMERA_RADIUS - target.y) / distance
+        min_y = self.GROUND_Y + self.CAMERA_RADIUS
+        if self._orbit_distance > 0:
+            sin_min = (min_y - float(self._state.target[1])) / self._orbit_distance
+            sin_min = max(-1.0, min(1.0, sin_min))
+            pitch_min = math.asin(sin_min)
+            self._orbit_pitch = max(self._orbit_pitch, pitch_min)
+
         x = self._orbit_distance * math.cos(self._orbit_pitch) * math.sin(self._orbit_yaw)
         y = self._orbit_distance * math.sin(self._orbit_pitch)
         z = self._orbit_distance * math.cos(self._orbit_pitch) * math.cos(self._orbit_yaw)

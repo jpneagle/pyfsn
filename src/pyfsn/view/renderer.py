@@ -1704,8 +1704,8 @@ class Renderer(QOpenGLWidget):
             True if collision detected
         """
         # 1. Ground collision
-        if position[1] < radius:  # Assuming ground is at y=0 (or -0.5)
-            # Actually ground is at -0.5, but we want to stay above y=0.5
+        # Ground plane is at y=-0.5; keep camera above ground surface + radius
+        if position[1] < -0.5 + radius:
             return True
             
         # 2. Platform collision (AABB)

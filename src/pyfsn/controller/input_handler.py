@@ -483,30 +483,17 @@ class InputHandler:
             # Calculate full movement vector
             move_vec = self._camera.get_fly_move_vector(dx, dy, dz, speed_multiplier=speed_mult)
             current_pos = self._camera.state.position
-            
-            # Helper to try move
-            def try_move(vec):
-                new_pos = current_pos + vec
-                if not self._renderer.check_collision(new_pos):
-                    return True
-                return False
 
-            # Try moving all axes
-            # To allow sliding, we try moving axes independently if full move fails
-            
-            # Simple approach: Check full move first
+            # Try moving all axes; allow sliding by testing axes independently
             target_pos = current_pos + move_vec.astype(np.float32)
             if not self._renderer.check_collision(target_pos):
                 self._camera.state.position = target_pos
             else:
-                # Collision! Try sliding (X+Z plane, then Y)
-                # Or try scalar projection?
-                # Sliding logic:
                 # Try X component
                 move_x = np.array([move_vec[0], 0, 0], dtype=np.float32)
                 if not self._renderer.check_collision(current_pos + move_x):
                     self._camera.state.position += move_x
-                    current_pos = self._camera.state.position # Update for next check
+                    current_pos = self._camera.state.position
 
                 # Try Z component
                 move_z = np.array([0, 0, move_vec[2]], dtype=np.float32)
@@ -518,6 +505,15 @@ class InputHandler:
                 move_y = np.array([0, move_vec[1], 0], dtype=np.float32)
                 if not self._renderer.check_collision(current_pos + move_y):
                     self._camera.state.position += move_y
+
+        # Clamp camera above ground regardless of input (handles initial state / gravity)
+        GROUND_Y = -0.5
+        CAMERA_RADIUS = 0.5
+        min_y = GROUND_Y + CAMERA_RADIUS
+        if self._camera.state.position[1] < min_y:
+            pos = self._camera.state.position.copy()
+            pos[1] = min_y
+            self._camera.state.position = pos
 
     # Private methods
 

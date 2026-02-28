@@ -1154,12 +1154,22 @@ class Renderer(QOpenGLWidget):
 
         position = self._positions[target_path]
 
-        # Calculate bbox center
-        center = np.array([
-            position.x + position.width / 2,
-            position.y + position.height / 2,
-            position.z + position.depth / 2,
-        ], dtype=np.float32)
+        # Calculate bbox center, accounting for actual rendered Y for files
+        block_top = None
+        if not target_node.is_directory and target_node.parent:
+            parent_pedestal = self._calculate_pedestal_height(target_node.parent)
+            center = np.array([
+                position.x + position.width / 2,
+                parent_pedestal + position.height / 2,
+                position.z + position.depth / 2,
+            ], dtype=np.float32)
+            block_top = parent_pedestal + position.height
+        else:
+            center = np.array([
+                position.x + position.width / 2,
+                position.y + position.height / 2,
+                position.z + position.depth / 2,
+            ], dtype=np.float32)
 
         # Determine distance based on node type
         if distance is None:
@@ -1172,16 +1182,42 @@ class Renderer(QOpenGLWidget):
                 max_dim = max(position.width, position.height, position.depth)
                 distance = max_dim * 3.0 + 5.0
 
+        # For files, calculate camera end position with proper elevation above block top
+        end_pos = None
+        if block_top is not None:
+            current_pos = self.camera.state.position.copy()
+            current_target = self.camera.state.target.copy()
+
+            # Preserve current horizontal azimuth direction
+            horiz = current_pos - current_target
+            horiz[1] = 0.0
+            horiz_norm = np.linalg.norm(horiz)
+            if horiz_norm > 0.001:
+                horiz = horiz / horiz_norm
+            else:
+                horiz = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+
+            # Place camera at ~30-degree elevation (sin30=0.5, cos30=0.866)
+            end_pos = center + horiz * (distance * 0.866)
+            end_pos[1] = center[1] + distance * 0.5
+
+            # Ensure camera stays above block top with clearance
+            min_cam_y = block_top + 2.0
+            if end_pos[1] < min_cam_y:
+                end_pos[1] = min_cam_y
+
         # Animate camera to new position over ~300ms
-        self._animate_camera_to(center, distance, duration_ms=300)
+        self._animate_camera_to(center, distance, end_pos=end_pos, duration_ms=300)
 
     def _animate_camera_to(self, target: np.ndarray, distance: float,
+                          end_pos: np.ndarray | None = None,
                           duration_ms: int = 300) -> None:
         """Animate camera to look at a target position.
 
         Args:
             target: Target position to look at
             distance: Distance from target
+            end_pos: Optional explicit camera end position (auto-calculated if None)
             duration_ms: Animation duration in milliseconds
         """
         # Store animation state
@@ -1191,15 +1227,18 @@ class Renderer(QOpenGLWidget):
         self._animation_start_target = self.camera.state.target.copy()
         self._animation_end_target = target
 
-        # Calculate end position based on current direction
-        direction = self._animation_start_pos - self._animation_start_target
-        if np.linalg.norm(direction) > 0:
-            direction = direction / np.linalg.norm(direction)
+        if end_pos is not None:
+            self._animation_end_pos = end_pos
         else:
-            direction = np.array([1.0, 1.0, 1.0], dtype=np.float32)
-            direction = direction / np.linalg.norm(direction)
+            # Calculate end position based on current direction
+            direction = self._animation_start_pos - self._animation_start_target
+            if np.linalg.norm(direction) > 0:
+                direction = direction / np.linalg.norm(direction)
+            else:
+                direction = np.array([1.0, 1.0, 1.0], dtype=np.float32)
+                direction = direction / np.linalg.norm(direction)
 
-        self._animation_end_pos = target + direction * distance
+            self._animation_end_pos = target + direction * distance
 
         # Enable animation flag
         self._is_animating = True

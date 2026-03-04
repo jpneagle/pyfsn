@@ -826,126 +826,121 @@ class Renderer(QOpenGLWidget):
         self._nodes = nodes
         self._positions = layout_result.positions
 
+        # Cancel any in-progress camera animation so it doesn't override
+        # the camera position set after scene load
+        self._is_animating = False
+
         selection = selection or set()
 
         for path_str, position in layout_result.positions.items():
             if path_str not in nodes:
                 continue
-
             node = nodes[path_str]
-
             if node.type == NodeType.DIRECTORY:
-                # Platforms (Directories) - Size calculated by LayoutEngine
-                platform_w = position.width
-                platform_d = position.depth
-                
-                # FSN style: pedestal height proportional to content size (Phase 2)
-                height = self._calculate_pedestal_height(node)
-                
-                # "Grow Up" model: Base at y=0, extends upwards
-                pos_array = np.array([
-                    position.x + position.width / 2,
-                    height / 2,  # Center is at radius (height/2) above ground (0)
-                    position.z + position.depth / 2,
-                ], dtype=np.float32)
-
-                scale_array = np.array([
-                    platform_w,
-                    height,
-                    platform_d,
-                ], dtype=np.float32)
-
-                # Color: Blue for platform (directory color)
-                if path_str in selection:
-                    color = self._colors["selected"].copy()
-                else:
-                    color = self._colors["directory"].copy()
-
-                # Calculate emission for platform
-                emission = self._calculate_emission(node)
-
-                platform = CubeInstance(position=pos_array, scale=scale_array, color=color, shininess=5.0, emission=emission)
-                self._node_to_platform[path_str] = len(self._platforms)
-                self._path_to_platform_index[path_str] = len(self._platforms)
-                self._platforms.append(platform)
-                
+                self._load_directory_instance(path_str, node, position, selection)
             else:
-                # File blocks - height from layout engine (SGI fsn style)
-                height = position.height
+                self._load_file_instance(path_str, node, position, selection)
 
-                # Calculate parent pedestal height to place file on top
-                parent_height = 0.0
-                if node.parent and self._calculate_pedestal_height:
-                     parent_height = self._calculate_pedestal_height(node.parent)
+        self._build_connections(layout_result, nodes)
+        self.update()
 
-                # Position files on top of parent pedestal
-                pos_array = np.array([
-                    position.x + position.width / 2,
-                    parent_height + height / 2,
-                    position.z + position.depth / 2,
-                ], dtype=np.float32)
+    def _load_directory_instance(self, path_str: str, node: Node, position, selection: set[str]) -> None:
+        """Create and register a platform (directory) render instance."""
+        platform_w = position.width
+        platform_d = position.depth
 
-                scale_array = np.array([
-                    position.width * 0.8,
-                    height,
-                    position.depth * 0.8,
-                ], dtype=np.float32)
+        # FSN style: pedestal height proportional to content size (Phase 2)
+        height = self._calculate_pedestal_height(node)
 
-                if path_str in selection:
-                    color = self._colors["selected"].copy()
-                elif node.type == NodeType.SYMLINK:
-                    color = self._colors["symlink"].copy()
-                elif self._color_mode == ColorMode.AGE:
-                    # SGI fsn style: color by file age
-                    color = self._calculate_age_color(node.mtime)
-                else:
-                    # Type-based color (default gray for files)
-                    color = np.array([0.6, 0.6, 0.7, 1.0], dtype=np.float32)
+        # "Grow Up" model: Base at y=0, extends upwards
+        pos_array = np.array([
+            position.x + position.width / 2,
+            height / 2,  # Center is at radius (height/2) above ground (0)
+            position.z + position.depth / 2,
+        ], dtype=np.float32)
 
-                # Calculate emission for file cube
-                emission = self._calculate_emission(node)
+        scale_array = np.array([
+            platform_w,
+            height,
+            platform_d,
+        ], dtype=np.float32)
 
-                # File cubes have higher shininess (more glossy surface)
-                cube = CubeInstance(position=pos_array, scale=scale_array, color=color, shininess=50.0, emission=emission)
-                self._node_to_cube[path_str] = len(self._cubes)
-                self._path_to_cube_index[path_str] = len(self._cubes)
-                self._cubes.append(cube)
+        if path_str in selection:
+            color = self._colors["selected"].copy()
+        else:
+            color = self._colors["directory"].copy()
 
-        # Build connections
+        emission = self._calculate_emission(node)
+
+        platform = CubeInstance(position=pos_array, scale=scale_array, color=color, shininess=5.0, emission=emission)
+        self._node_to_platform[path_str] = len(self._platforms)
+        self._path_to_platform_index[path_str] = len(self._platforms)
+        self._platforms.append(platform)
+
+    def _load_file_instance(self, path_str: str, node: Node, position, selection: set[str]) -> None:
+        """Create and register a cube (file) render instance."""
+        height = position.height
+
+        # Place file on top of parent pedestal
+        parent_height = 0.0
+        if node.parent and self._calculate_pedestal_height:
+            parent_height = self._calculate_pedestal_height(node.parent)
+
+        pos_array = np.array([
+            position.x + position.width / 2,
+            parent_height + height / 2,
+            position.z + position.depth / 2,
+        ], dtype=np.float32)
+
+        scale_array = np.array([
+            position.width * 0.8,
+            height,
+            position.depth * 0.8,
+        ], dtype=np.float32)
+
+        if path_str in selection:
+            color = self._colors["selected"].copy()
+        elif node.type == NodeType.SYMLINK:
+            color = self._colors["symlink"].copy()
+        elif self._color_mode == ColorMode.AGE:
+            color = self._calculate_age_color(node.mtime)
+        else:
+            color = np.array([0.6, 0.6, 0.7, 1.0], dtype=np.float32)
+
+        emission = self._calculate_emission(node)
+
+        cube = CubeInstance(position=pos_array, scale=scale_array, color=color, shininess=50.0, emission=emission)
+        self._node_to_cube[path_str] = len(self._cubes)
+        self._path_to_cube_index[path_str] = len(self._cubes)
+        self._cubes.append(cube)
+
+    def _build_connections(self, layout_result, nodes: dict[str, Node]) -> None:
+        """Build wire connections between directory platforms."""
         for parent_path, child_path in layout_result.connections:
             if parent_path not in nodes or child_path not in nodes:
                 continue
-            
-            # Only connect directory to directory (Platform to Platform)
-            # Feature 2 requirement: "Connect parent directory platform to child directory platform"
+
             parent_node = nodes[parent_path]
             child_node = nodes[child_path]
-            
+
             if parent_node.type == NodeType.DIRECTORY and child_node.type == NodeType.DIRECTORY:
                 parent_pos = layout_result.positions[parent_path]
                 child_pos = layout_result.positions[child_path]
-                
-                # Connect Back Edge of Parent to Front Edge of Child
-                # Parent is "in front" (larger Z), Child is "behind" (smaller/more negative Z)
-                # We connect Parent Min Z to Child Max Z
-                # Height: Connect along the ground (y = 0.05) to be visible above ground plane
-                
+
                 start_pos = np.array([
                     parent_pos.x + parent_pos.width / 2,
                     0.05,
                     parent_pos.z  # Back face (Min Z)
                 ], dtype=np.float32)
-                
+
                 end_pos = np.array([
                     child_pos.x + child_pos.width / 2,
                     0.05,
                     child_pos.z + child_pos.depth  # Front face (Max Z)
                 ], dtype=np.float32)
-                
+
                 self._connections.append((start_pos, end_pos))
                 self._connection_metadata.append((parent_path, child_path))  # PR-4: Store metadata
-
-        self.update()
 
     def _on_timer(self) -> None:
         """Timer callback for animation."""
@@ -1706,15 +1701,15 @@ class Renderer(QOpenGLWidget):
 
             # Draw quad centered at origin (after scale)
             glBegin(GL_QUADS)
-            # Texture coords: flip U to fix mirror effect
-            glTexCoord2f(1, 1)
-            glVertex3f(-0.5, 0, -0.5)  # Bottom-left
-            glTexCoord2f(0, 1)
-            glVertex3f(0.5, 0, -0.5)  # Bottom-right
+            # Texture coords: U and V both corrected for +Z camera direction
             glTexCoord2f(0, 0)
-            glVertex3f(0.5, 0, 0.5)  # Top-right
+            glVertex3f(-0.5, 0, -0.5)
             glTexCoord2f(1, 0)
-            glVertex3f(-0.5, 0, 0.5)  # Top-left
+            glVertex3f(0.5, 0, -0.5)
+            glTexCoord2f(1, 1)
+            glVertex3f(0.5, 0, 0.5)
+            glTexCoord2f(0, 1)
+            glVertex3f(-0.5, 0, 0.5)
             glEnd()
 
             glPopMatrix()

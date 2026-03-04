@@ -1533,6 +1533,8 @@ class MainWindow(QMainWindow):
         """
         self._root_path = path
         self.setWindowTitle(f"pyfsn - {self._root_path}")
+        if self._search_bar is not None:
+            self._search_bar.clear()
 
     def update_navigation_state(self, can_go_back: bool, can_go_forward: bool) -> None:
         """Update navigation button states.

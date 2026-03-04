@@ -331,42 +331,35 @@ class Controller(QObject):
 
     def _reset_camera_to_scene(self) -> None:
         """Reset camera to view the entire scene."""
+        import math
         import numpy as np
 
         if self._layout_result is None or self._layout_result.bounds is None:
             return
 
         bounds = self._layout_result.bounds
+        scene_center = np.array(bounds.position.center, dtype=np.float32)
 
-        # Use root directory position as target (not scene bounds center)
-        # This ensures the clicked directory is centered in view
-        root_path = str(self._root_node.path)
-        if root_path in self._positions:
-            root_pos = self._positions[root_path]
-            target_center = root_pos.center
-        else:
-            # Fallback to scene bounds center if root position not found
-            target_center = bounds.position.center
+        # Half-extents of the scene footprint on the XZ plane
+        half_w = bounds.position.width / 2.0
+        half_d = bounds.position.depth / 2.0
+        half_extent = max(half_w, half_d)
 
-        # Calculate appropriate distance based on scene size
-        size = max(
-            bounds.position.width,
-            bounds.position.height,
-            bounds.position.depth,
-        )
-        distance = size * 2.0 + 10.0  # Ensure we're far enough to see everything
+        # Distance needed so the scene fits within the camera's horizontal FOV
+        fov_rad = math.radians(self._camera.state.fov)
+        fit_distance = (half_extent / math.tan(fov_rad / 2.0)) * 1.2  # 20% margin
+        fit_distance = max(fit_distance, 5.0)  # minimum distance
 
-        # Position camera to look at root directory center from a diagonal angle
+        # Camera at ~45° elevation angle above scene center, looking straight at it
+        # sin(45°)=cos(45°)=√2/2 ≈ 0.707
         camera_pos = np.array([
-            target_center[0] + distance * 0.5,
-            target_center[1] + distance * 0.5,
-            target_center[2] - distance,  # Z negative to look at positive Z objects
+            scene_center[0],
+            scene_center[1] + fit_distance * 0.707,
+            scene_center[2] + fit_distance * 0.707,
         ], dtype=np.float32)
 
-        target_pos = np.array(target_center, dtype=np.float32)
-
         # Update camera state using public API
-        self._camera.set_position_target(camera_pos, target_pos)
+        self._camera.set_position_target(camera_pos, scene_center)
 
     # Text overlay (labels)
 
@@ -435,10 +428,20 @@ class Controller(QObject):
             return
 
         query_lower = query.lower()
-        self._search_results = [
+        matches = [
             node for node in self._nodes.values()
             if query_lower in node.name.lower()
         ]
+
+        def _match_rank(node: Node) -> int:
+            name = node.name.lower()
+            if name == query_lower:
+                return 0  # 完全一致
+            if name.startswith(query_lower):
+                return 1  # 前方一致
+            return 2  # 部分一致
+
+        self._search_results = sorted(matches, key=_match_rank)
 
         if self._search_results:
             self._current_search_index = 0
@@ -677,8 +680,9 @@ class Controller(QObject):
         """
         self.node_selected.emit(node)
 
-        # Snap camera to selected node (single click)
-        if hasattr(self._renderer, 'snap_camera_to_node'):
+        # Snap camera to selected node (single click only)
+        # On double-click to a directory, _reset_camera_to_scene() handles positioning
+        if not is_double_click and hasattr(self._renderer, 'snap_camera_to_node'):
             self._renderer.snap_camera_to_node(id(node))
 
         if is_double_click:
@@ -692,13 +696,16 @@ class Controller(QObject):
                     self._open_file(node)
                     self.scan_progress.emit(f"Opened: {node.name}")
                 except FileOpenError as e:
-                    self.scan_progress.emit(f"Error: {e.reason}")
-                    # Show error dialog
-                    QMessageBox.warning(
-                        self._window,
-                        "Cannot Open File",
-                        f"Failed to open {node.name}:\n{e.reason}"
-                    )
+                    self._show_file_open_error(node, e)
+
+    def _show_file_open_error(self, node: Node, e: FileOpenError) -> None:
+        """Display file open error in status bar and dialog."""
+        self.scan_progress.emit(f"Error: {e.reason}")
+        QMessageBox.warning(
+            self._window,
+            "Cannot Open File",
+            f"Failed to open {node.name}:\n{e.reason}"
+        )
 
     def _open_file(self, node: Node) -> None:
         """Open a file with the default application.
@@ -778,13 +785,7 @@ class Controller(QObject):
                 self._open_file(node)
                 self.scan_progress.emit(f"Opened: {node.name}")
             except FileOpenError as e:
-                self.scan_progress.emit(f"Error: {e.reason}")
-                # Show error dialog
-                QMessageBox.warning(
-                    self._window,
-                    "Cannot Open File",
-                    f"Failed to open {node.name}:\n{e.reason}"
-                )
+                self._show_file_open_error(node, e)
 
     def _on_selection_changed(self, selected_nodes: set[Node]) -> None:
         """Handle selection change from input handler.

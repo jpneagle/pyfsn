@@ -11,6 +11,38 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from pyfsn.model.node import Node, NodeType
 
 
+def _get_sorted_entries(path: Path) -> list[str]:
+    """Get directory entries sorted by type and name.
+
+    Directories come first, then files, both sorted alphabetically.
+
+    Args:
+        path: Directory path to read
+
+    Returns:
+        Sorted list of entry names
+    """
+    try:
+        entries = list(path.iterdir())
+    except PermissionError:
+        return []
+
+    dirs: list[str] = []
+    files: list[str] = []
+
+    for entry in entries:
+        name = entry.name
+        if name.startswith("."):
+            continue
+
+        if entry.is_dir():
+            dirs.append(name)
+        else:
+            files.append(name)
+
+    return sorted(dirs) + sorted(files)
+
+
 class ScanProgress:
     """Progress information for a scan operation."""
 
@@ -146,38 +178,7 @@ class ScannerWorker(QThread):
             self.error.emit(f"Error reading {node.path}: {e}")
 
     def _get_sorted_entries(self, path: Path) -> list[str]:
-        """Get directory entries sorted by type and name.
-
-        Directories come first, then files, both sorted alphabetically.
-
-        Args:
-            path: Directory path to read
-
-        Returns:
-            Sorted list of entry names
-        """
-        try:
-            entries = list(path.iterdir())
-        except PermissionError:
-            return []
-
-        # Separate directories and files
-        dirs: list[str] = []
-        files: list[str] = []
-
-        for entry in entries:
-            name = entry.name
-            # Skip hidden files/directories
-            if name.startswith("."):
-                continue
-
-            if entry.is_dir():
-                dirs.append(name)
-            else:
-                files.append(name)
-
-        # Sort and combine
-        return sorted(dirs) + sorted(files)
+        return _get_sorted_entries(path)
 
 
 class Scanner:
@@ -296,26 +297,7 @@ class Scanner:
             pass
 
     def _get_sorted_entries(self, path: Path) -> list[str]:
-        """Get directory entries sorted by type and name."""
-        try:
-            entries = list(path.iterdir())
-        except PermissionError:
-            return []
-
-        dirs: list[str] = []
-        files: list[str] = []
-
-        for entry in entries:
-            name = entry.name
-            if name.startswith("."):
-                continue
-
-            if entry.is_dir():
-                dirs.append(name)
-            else:
-                files.append(name)
-
-        return sorted(dirs) + sorted(files)
+        return _get_sorted_entries(path)
 
     def __del__(self) -> None:
         """Cleanup on deletion."""

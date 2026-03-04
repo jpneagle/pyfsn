@@ -4,12 +4,12 @@ Manages user interaction with the 3D file system visualization including
 camera controls, object selection, and navigation.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable
 
 from PyQt6.QtCore import Qt, QPoint, QTimer
-from PyQt6.QtGui import QKeyEvent, QMouseEvent, QWheelEvent, QKeyEvent
+from PyQt6.QtGui import QKeyEvent, QMouseEvent, QWheelEvent
 import numpy as np
 
 from pyfsn.view.camera import Camera, CameraMode
@@ -37,23 +37,13 @@ class KeyModifier(Enum):
 class InputState:
     """Current input state."""
 
-    mouse_position: QPoint = QPoint(0, 0)
-    mouse_pressed: set[MouseButton] = None
-    modifiers: set[KeyModifier] = None
-    last_mouse_position: QPoint = None
-    mouse_drag_start: QPoint = None
+    mouse_position: QPoint = field(default_factory=lambda: QPoint(0, 0))
+    mouse_pressed: set[MouseButton] = field(default_factory=set)
+    modifiers: set[KeyModifier] = field(default_factory=set)
+    last_mouse_position: QPoint = field(default_factory=lambda: QPoint(0, 0))
+    mouse_drag_start: QPoint = field(default_factory=lambda: QPoint(0, 0))
     is_dragging: bool = False
     drag_threshold: int = 5
-
-    def __post_init__(self) -> None:
-        if self.mouse_pressed is None:
-            self.mouse_pressed = set()
-        if self.modifiers is None:
-            self.modifiers = set()
-        if self.last_mouse_position is None:
-            self.last_mouse_position = QPoint(0, 0)
-        if self.mouse_drag_start is None:
-            self.mouse_drag_start = QPoint(0, 0)
 
     def update_modifiers(self, modifiers: Qt.KeyboardModifier) -> None:
         """Update modifier state from Qt modifiers."""
@@ -507,9 +497,7 @@ class InputHandler:
                     self._camera.state.position += move_y
 
         # Clamp camera above ground regardless of input (handles initial state / gravity)
-        GROUND_Y = -0.5
-        CAMERA_RADIUS = 0.5
-        min_y = GROUND_Y + CAMERA_RADIUS
+        min_y = Camera.GROUND_Y + Camera.CAMERA_RADIUS
         if self._camera.state.position[1] < min_y:
             pos = self._camera.state.position.copy()
             pos[1] = min_y

@@ -87,11 +87,7 @@ class Camera:
         
         if self.mode == CameraMode.FLY:
             # In Fly mode, target is calculated from yaw/pitch
-            front = np.array([
-                math.cos(self._fly_pitch) * math.sin(self._fly_yaw),
-                math.sin(self._fly_pitch),
-                math.cos(self._fly_pitch) * math.cos(self._fly_yaw)
-            ], dtype=np.float32)
+            front = self._get_fly_front_vector()
             target = eye + front
             self._state.target = target  # Update target for external use
         else:
@@ -213,12 +209,7 @@ class Camera:
         speed = self._fly_speed * speed_multiplier
         
         # Calculate direction vectors based on current orientation
-        front = np.array([
-            math.cos(self._fly_pitch) * math.sin(self._fly_yaw),
-            math.sin(self._fly_pitch),
-            math.cos(self._fly_pitch) * math.cos(self._fly_yaw)
-        ], dtype=np.float32)
-        
+        front = self._get_fly_front_vector()
         right = np.cross(front, self._state.up)
         # Normalize right vector (handle zero length case)
         right_norm = np.linalg.norm(right)
@@ -265,6 +256,14 @@ class Camera:
     # Ground plane Y and camera collision radius (must match renderer constants)
     GROUND_Y: float = -0.5
     CAMERA_RADIUS: float = 0.5
+
+    def _get_fly_front_vector(self) -> np.ndarray:
+        """Calculate the forward vector for fly mode based on current yaw/pitch."""
+        return np.array([
+            math.cos(self._fly_pitch) * math.sin(self._fly_yaw),
+            math.sin(self._fly_pitch),
+            math.cos(self._fly_pitch) * math.cos(self._fly_yaw),
+        ], dtype=np.float32)
 
     def _update_position_from_orbit(self) -> None:
         """Update camera position from orbit parameters."""
@@ -348,11 +347,7 @@ class Camera:
         # Inverse view (just need rotation part for direction)
         # Calculate forward vector based on mode
         if self.mode == CameraMode.FLY:
-             forward = np.array([
-                math.cos(self._fly_pitch) * math.sin(self._fly_yaw),
-                math.sin(self._fly_pitch),
-                math.cos(self._fly_pitch) * math.cos(self._fly_yaw)
-            ], dtype=np.float32)
+            forward = self._get_fly_front_vector()
         else:
             forward = self._state.target - self._state.position
             forward = forward / np.linalg.norm(forward)
@@ -364,27 +359,7 @@ class Camera:
         ray_world = (
             right * ray_clip[0] +
             up * ray_clip[1] +
-            -forward * ray_clip[2]  # -forward is because OpenGL looks down -Z
-        )
-        # Note: forward is towards -Z in view space usually, but here 'forward' is truly forward vector
-        # ray_clip.z is -1.0, meaning direction into screen.
-        # So we want (inverse view rotation) * (ray_clip)
-        # InvView = [ Right, Up, -Forward ]
-        # ray_world = Right * x + Up * y + (-Forward) * z
-        # Since z is -1.0, it becomes Right*x + Up*y + Forward*1.0
-        # Wait, if z is -1, it means forward.
-        # Let's recheck basic math:
-        # P_world = M_inv * P_clip
-        # P_clip = (x, y, -1, 0)
-        # M_view = [ s, u, -f ]
-        # M_inv = [ s^T, u^T, -f^T ] (orthonormal)
-        # M_inv * (x, y, -1) = s*x + u*y + (-f)*(-1) = s*x + u*y + f
-        
-        # Correct calculation:
-        ray_world_corrected = (
-            right * ray_clip[0] +
-            up * ray_clip[1] +
-            forward * (-ray_clip[2]) # -(-1) = +1
+            forward * (-ray_clip[2])  # -(-1) = +1
         )
 
-        return ray_world_corrected / np.linalg.norm(ray_world_corrected)
+        return ray_world / np.linalg.norm(ray_world)

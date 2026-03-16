@@ -84,6 +84,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Disable node name labels",
     )
+    parser.add_argument(
+        "--no-sound",
+        action="store_true",
+        help="Disable UI sound effects",
+    )
     return parser.parse_args()
 
 
@@ -186,6 +191,10 @@ def main() -> int:
     if args.no_labels:
         controller._window._show_labels = False
         controller._window._control_panel._show_labels_btn.setChecked(False)
+
+    # Disable sound effects if requested
+    if args.no_sound:
+        controller._sound.enabled = False
 
     # Set tooltip visibility (if supported)
     if args.no_tooltips:

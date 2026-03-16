@@ -1353,8 +1353,25 @@ class Renderer(QOpenGLWidget):
         self._animation_start_time = time.time()
         self._animation_duration = duration_ms / 1000.0
         self._animation_start_pos = self.camera.state.position.copy()
-        self._animation_start_target = self.camera.state.target.copy()
         self._animation_end_target = target
+
+        # In Fly mode, state.target is just eye+front (distance=1), which makes
+        # target interpolation erratic.  Synthesise a start_target at the same
+        # distance as end_target so the "look-at" sweeps smoothly.
+        from pyfsn.view.camera import CameraMode
+        if self.camera.mode == CameraMode.FLY:
+            end_dist = float(np.linalg.norm(target - self._animation_start_pos))
+            if end_dist < 0.01:
+                end_dist = 1.0
+            front = self.camera.state.target - self._animation_start_pos
+            front_norm = float(np.linalg.norm(front))
+            if front_norm > 1e-6:
+                front = front / front_norm
+            else:
+                front = np.array([0.0, 0.0, -1.0], dtype=np.float32)
+            self._animation_start_target = self._animation_start_pos + front * end_dist
+        else:
+            self._animation_start_target = self.camera.state.target.copy()
 
         if end_pos is not None:
             self._animation_end_pos = end_pos

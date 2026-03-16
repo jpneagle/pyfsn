@@ -101,7 +101,15 @@ class Camera:
 
         # Right vector
         s = np.cross(f, up)
-        s = s / np.linalg.norm(s)
+        s_norm = np.linalg.norm(s)
+        if s_norm < 1e-6:
+            # Front is nearly parallel to up — pick an arbitrary right vector
+            s = np.cross(f, np.array([1.0, 0.0, 0.0], dtype=np.float32))
+            s_norm = np.linalg.norm(s)
+            if s_norm < 1e-6:
+                s = np.cross(f, np.array([0.0, 0.0, 1.0], dtype=np.float32))
+                s_norm = np.linalg.norm(s)
+        s = s / s_norm
 
         # Up vector (recalculated)
         u = np.cross(s, f)
@@ -296,10 +304,13 @@ class Camera:
         """Update fly orientation from current target vector."""
         diff = self._state.target - self._state.position
         dist = np.linalg.norm(diff)
-        
+
         if dist > 0:
             self._fly_yaw = math.atan2(diff[0], diff[2])
-            self._fly_pitch = math.asin(diff[1] / dist)
+            self._fly_pitch = math.asin(max(-1.0, min(1.0, diff[1] / dist)))
+            # Clamp pitch to avoid gimbal lock (same as fly_look)
+            max_pitch = math.radians(89.0)
+            self._fly_pitch = max(-max_pitch, min(max_pitch, self._fly_pitch))
 
     def set_position_target(self, position: np.ndarray, target: np.ndarray) -> None:
         """Set camera position and target simultaneously.

@@ -101,7 +101,7 @@ class SoundManager:
     """
 
     def __init__(self) -> None:
-        self._enabled = False
+        self._enabled = True
         self._sounds: dict[str, object] = {}
         self._temp_files: list = []  # Keep references to prevent GC
 

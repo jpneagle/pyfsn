@@ -29,6 +29,7 @@ class Theme:
         fog_color: Depth fog color (RGBA), defaults to background_color
         fog_start: Distance at which fog begins
         fog_end: Distance at which fog reaches full density
+        static_wires: Use simple static wires instead of animated pulse effects
     """
 
     name: str
@@ -42,6 +43,7 @@ class Theme:
     fog_color: tuple[float, float, float, float] | None = None
     fog_start: float = 100.0
     fog_end: float = 500.0
+    static_wires: bool = False
 
     def __post_init__(self):
         """Set default fog color to match background if not specified."""
@@ -62,6 +64,7 @@ SGI_CLASSIC = Theme(
     enable_bloom=False,
     enable_grid=True,
     fog_color=(0.1, 0.1, 0.15, 1.0),
+    static_wires=True,
 )
 
 # Dark Mode theme - reduced eye strain for dark environments

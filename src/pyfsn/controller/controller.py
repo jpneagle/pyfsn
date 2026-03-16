@@ -9,8 +9,9 @@ from typing import Callable
 import subprocess
 import sys
 
-from PyQt6.QtCore import QObject, pyqtSignal, QThread, QTimer
-from PyQt6.QtWidgets import QMessageBox
+from PyQt6.QtCore import QObject, pyqtSignal, QThread, QTimer, QPoint
+from PyQt6.QtGui import QAction
+from PyQt6.QtWidgets import QMessageBox, QMenu, QApplication
 
 from pyfsn.model.node import Node, NodeType
 from pyfsn.model.scanner import Scanner, ScannerWorker, ScanProgress
@@ -19,6 +20,9 @@ from pyfsn.layout.engine import LayoutEngine, LayoutConfig, LayoutResult
 from pyfsn.view.renderer import Renderer
 from pyfsn.view.camera import CameraMode
 from pyfsn.view.main_window import MainWindow
+from pyfsn.view.sound import SoundManager
+from pyfsn.view.theme import DEFAULT_THEME
+from pyfsn.view.theme_manager import get_theme_manager
 from pyfsn.controller.input_handler import InputHandler
 
 
@@ -96,6 +100,14 @@ class Controller(QObject):
         self._active_filters: dict = {}
         self._filtered_nodes: dict[str, Node] = {}
 
+        # Sound effects (disabled by default)
+        self._sound = SoundManager()
+
+        # Set default theme on renderer and listen for theme changes
+        self._theme_manager = get_theme_manager()
+        self._renderer.set_theme(self._theme_manager.current_theme)
+        self._theme_manager.theme_changed.connect(self._renderer.set_theme)
+
         # Text overlay update timer
         self._overlay_timer = QTimer()
         self._overlay_timer.timeout.connect(self._update_text_overlay)
@@ -132,6 +144,9 @@ class Controller(QObject):
         # Connect filter panel signal (Workstream F - Advanced filtering)
         self._window.filter_changed.connect(self._apply_filters)
 
+        # Sound toggle
+        self._window.sound_toggled.connect(lambda enabled: setattr(self._sound, 'enabled', enabled))
+
     def _connect_input_handler(self) -> None:
         """Connect input handler callbacks."""
         self._input_handler.set_node_clicked_callback(self._on_node_clicked)
@@ -140,6 +155,7 @@ class Controller(QObject):
         self._input_handler.set_navigate_next_callback(self._select_next_node)
         self._input_handler.set_navigate_previous_callback(self._select_previous_node)
         self._input_handler.set_camera_mode_changed_callback(self._on_camera_mode_changed)
+        self._input_handler.set_context_menu_callback(self._show_context_menu)
 
     def start(self) -> None:
         """Start the application - begin scanning."""
@@ -679,6 +695,7 @@ class Controller(QObject):
             is_double_click: Whether this was a double-click
         """
         self.node_selected.emit(node)
+        self._sound.play_click()
 
         # Snap camera to selected node (single click only)
         # On double-click to a directory, _reset_camera_to_scene() handles positioning
@@ -688,6 +705,7 @@ class Controller(QObject):
         if is_double_click:
             if node.is_directory:
                 # Navigate to directory (change current directory)
+                self._sound.play_navigate()
                 self._change_directory(node.path)
 
             elif node.is_file:
@@ -911,6 +929,80 @@ class Controller(QObject):
             self._renderer.snap_camera_to_node(id(node))
             
         self._window.file_tree.select_node(node)
+
+    # Context menu
+
+    def _show_context_menu(self, node, screen_pos) -> None:
+        """Show right-click context menu for a node or background.
+
+        Args:
+            node: Node at click position, or None for background
+            screen_pos: Screen position for menu
+        """
+        menu = QMenu(self._window)
+
+        if node is None:
+            # Background context menu
+            if self.can_go_back():
+                menu.addAction("Go Up", self.go_back)
+            menu.addAction("Refresh", self.refresh)
+            mode_menu = menu.addMenu("Camera Mode")
+            mode_menu.addAction("Orbit", lambda: self.set_camera_mode(CameraMode.ORBIT))
+            mode_menu.addAction("Fly", lambda: self.set_camera_mode(CameraMode.FLY))
+        elif node.is_directory:
+            menu.addAction("Enter Directory", lambda: self._change_directory(node.path))
+            menu.addSeparator()
+            menu.addAction("Copy Path", lambda: self._copy_path(node))
+            menu.addAction("Reveal in Finder", lambda: self._reveal_in_finder(node))
+            menu.addAction("Open Terminal Here", lambda: self._open_in_terminal(node))
+        else:
+            menu.addAction("Open", lambda: self._open_file_safe(node))
+            menu.addSeparator()
+            menu.addAction("Copy Path", lambda: self._copy_path(node))
+            menu.addAction("Reveal in Finder", lambda: self._reveal_in_finder(node))
+
+        menu.exec(screen_pos)
+
+    def _copy_path(self, node: Node) -> None:
+        """Copy node path to clipboard."""
+        QApplication.clipboard().setText(str(node.path))
+        self.scan_progress.emit(f"Copied: {node.path}")
+
+    def _reveal_in_finder(self, node: Node) -> None:
+        """Reveal node in system file manager."""
+        path = str(node.path)
+        try:
+            if sys.platform == "darwin":
+                subprocess.run(["open", "-R", path], check=True)
+            elif sys.platform == "win32":
+                subprocess.run(["explorer", "/select,", path], check=True)
+            else:
+                # Linux: open parent directory
+                parent = str(node.path.parent)
+                subprocess.run(["xdg-open", parent], check=True)
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            self.scan_progress.emit(f"Could not reveal: {path}")
+
+    def _open_in_terminal(self, node: Node) -> None:
+        """Open a terminal at the given directory."""
+        path = str(node.path) if node.is_directory else str(node.path.parent)
+        try:
+            if sys.platform == "darwin":
+                subprocess.run(["open", "-a", "Terminal", path], check=True)
+            elif sys.platform == "win32":
+                subprocess.Popen(["cmd", "/K", f"cd /d {path}"])
+            else:
+                subprocess.Popen(["x-terminal-emulator", "--working-directory", path])
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            self.scan_progress.emit(f"Could not open terminal at: {path}")
+
+    def _open_file_safe(self, node: Node) -> None:
+        """Open file with error handling for context menu."""
+        try:
+            self._open_file(node)
+            self.scan_progress.emit(f"Opened: {node.name}")
+        except FileOpenError as e:
+            self._show_file_open_error(node, e)
 
     # Public API
 

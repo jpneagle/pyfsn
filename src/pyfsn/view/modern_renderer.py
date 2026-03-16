@@ -282,7 +282,7 @@ class ModernGLRenderer(QOpenGLWidget):
         self._positions: dict[str, object] = {}
         self._cubes: list[CubeInstance] = []
         self._platforms: list[CubeInstance] = []
-        self._connections: list[tuple[np.ndarray, np.ndarray]] = []
+        self._connections: list[list[np.ndarray]] = []  # Polyline segments (L-shaped routing)
         self._connection_metadata: list[tuple[str, str]] = []
 
         # Mapping for node lookup
@@ -731,13 +731,14 @@ class ModernGLRenderer(QOpenGLWidget):
         # Draw non-selected connections first (normal style)
         unselected_vertices = []
         unselected_colors = []
-        for i, (start, end) in enumerate(self._connections):
+        for i, polyline in enumerate(self._connections):
             if i not in self._selected_connections:
-                unselected_vertices.extend([start, end])
-                unselected_colors.extend([
-                    [1.0, 1.0, 1.0, 0.4],  # Dim white
-                    [1.0, 1.0, 1.0, 0.4],
-                ])
+                for j in range(len(polyline) - 1):
+                    unselected_vertices.extend([polyline[j], polyline[j + 1]])
+                    unselected_colors.extend([
+                        [1.0, 1.0, 1.0, 0.4],  # Dim white
+                        [1.0, 1.0, 1.0, 0.4],
+                    ])
 
         if unselected_vertices:
             vertices = np.array(unselected_vertices, dtype=np.float32)
@@ -765,12 +766,13 @@ class ModernGLRenderer(QOpenGLWidget):
             selected_colors = []
             for i in self._selected_connections:
                 if i < len(self._connections):
-                    start, end = self._connections[i]
-                    selected_vertices.extend([start, end])
-                    selected_colors.extend([
-                        [1.0, 1.0, 0.6, 0.9],  # Bright yellow-white
-                        [1.0, 1.0, 0.6, 0.9],
-                    ])
+                    polyline = self._connections[i]
+                    for j in range(len(polyline) - 1):
+                        selected_vertices.extend([polyline[j], polyline[j + 1]])
+                        selected_colors.extend([
+                            [1.0, 1.0, 0.6, 0.9],  # Bright yellow-white
+                            [1.0, 1.0, 0.6, 0.9],
+                        ])
 
             if selected_vertices:
                 vertices = np.array(selected_vertices, dtype=np.float32)
@@ -963,20 +965,23 @@ class ModernGLRenderer(QOpenGLWidget):
                 parent_pos = layout_result.positions[parent_path]
                 child_pos = layout_result.positions[child_path]
 
-                # Connect Back Edge of Parent to Front Edge of Child
-                start_pos = np.array([
-                    parent_pos.x + parent_pos.width / 2,
-                    -0.1,
-                    parent_pos.z  # Back face (Min Z)
-                ], dtype=np.float32)
+                parent_cx = parent_pos.x + parent_pos.width / 2
+                child_cx = child_pos.x + child_pos.width / 2
+                parent_min_z = parent_pos.z  # Back face
+                child_max_z = child_pos.z + child_pos.depth  # Front face
 
-                end_pos = np.array([
-                    child_pos.x + child_pos.width / 2,
-                    -0.1,
-                    child_pos.z + child_pos.depth  # Front face (Max Z)
-                ], dtype=np.float32)
+                start = np.array([parent_cx, -0.1, parent_min_z], dtype=np.float32)
+                end = np.array([child_cx, -0.1, child_max_z], dtype=np.float32)
 
-                self._connections.append((start_pos, end_pos))
+                if abs(parent_cx - child_cx) < 0.01:
+                    polyline = [start, end]
+                else:
+                    mid_z = (parent_min_z + child_max_z) / 2.0
+                    elbow1 = np.array([parent_cx, -0.1, mid_z], dtype=np.float32)
+                    elbow2 = np.array([child_cx, -0.1, mid_z], dtype=np.float32)
+                    polyline = [start, elbow1, elbow2, end]
+
+                self._connections.append(polyline)
                 self._connection_metadata.append((parent_path, child_path))
 
         # Update selected connections based on selection

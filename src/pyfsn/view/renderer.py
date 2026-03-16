@@ -50,7 +50,7 @@ class Renderer(QOpenGLWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
 
         # Camera
         self.camera = Camera()
@@ -69,7 +69,7 @@ class Renderer(QOpenGLWidget):
         self._positions: dict[str, object] = {}
         self._cubes: list[CubeInstance] = []
         self._platforms: list[CubeInstance] = []  # Directories are platforms
-        self._connections: list[tuple[np.ndarray, np.ndarray]] = []  # Line segments
+        self._connections: list[list[np.ndarray]] = []  # Polyline segments (L-shaped routing)
         self._connection_metadata: list[tuple[str, str]] = []  # (parent_path, child_path) for each connection (PR-4)
         self._node_to_cube: dict[str, int] = {}
         self._node_to_platform: dict[str, int] = {}
@@ -118,6 +118,9 @@ class Renderer(QOpenGLWidget):
         # Animation time for shader effects
         self._animation_time = 0.0
 
+        # Current theme (for theme-specific rendering)
+        self._theme = None
+
         # Input handler
         self._input_handler = None
 
@@ -147,6 +150,11 @@ class Renderer(QOpenGLWidget):
         else:                      # More than 1 year
             return np.array([0.7, 0.2, 0.1, 1.0], dtype=np.float32)  # Reddish Brown
 
+    def set_theme(self, theme) -> None:
+        """Set the current theme for theme-specific rendering."""
+        from pyfsn.view.theme import Theme
+        self._theme = theme
+
     def _calculate_emission(self, node: Node) -> float:
         """Calculate emission intensity based on file type and git status.
 
@@ -156,6 +164,10 @@ class Renderer(QOpenGLWidget):
         Returns:
             Emission intensity (0.0 - 1.0)
         """
+        # SGI Classic theme: no emission/glow effects
+        if self._theme and hasattr(self._theme, 'static_wires') and self._theme.static_wires:
+            return 0.0
+
         emission = 0.0
 
         # File type-based emission (cyberpunk style)
@@ -215,9 +227,17 @@ class Renderer(QOpenGLWidget):
         """Initialize OpenGL resources."""
         glClearColor(0.1, 0.1, 0.15, 1.0)
         glEnable(GL_DEPTH_TEST)
-        
-        # Disable lighting completely to preserve colors
-        glDisable(GL_LIGHTING)
+
+        # Enable OpenGL lighting (SGI fsn style specular highlights)
+        glEnable(GL_LIGHTING)
+        glEnable(GL_LIGHT0)
+        glEnable(GL_NORMALIZE)
+
+        # Directional light from upper-right-front
+        glLightfv(GL_LIGHT0, GL_POSITION, [0.5, 1.0, 0.8, 0.0])
+        glLightfv(GL_LIGHT0, GL_AMBIENT, [0.3, 0.3, 0.35, 1.0])
+        glLightfv(GL_LIGHT0, GL_DIFFUSE, [0.8, 0.8, 0.75, 1.0])
+        glLightfv(GL_LIGHT0, GL_SPECULAR, [1.0, 1.0, 0.9, 1.0])
 
         # Set up depth fog (SGI fsn style)
         self._setup_fog()
@@ -229,8 +249,8 @@ class Renderer(QOpenGLWidget):
         glEnable(GL_FOG)
         glFogi(GL_FOG_MODE, GL_LINEAR)
         glFogfv(GL_FOG_COLOR, [0.1, 0.1, 0.15, 1.0])  # Match background color
-        glFogf(GL_FOG_START, 100.0)
-        glFogf(GL_FOG_END, 500.0)
+        glFogf(GL_FOG_START, 80.0)
+        glFogf(GL_FOG_END, 600.0)
         glHint(GL_FOG_HINT, GL_NICEST)
 
     def resizeGL(self, w: int, h: int) -> None:
@@ -258,7 +278,8 @@ class Renderer(QOpenGLWidget):
         proj_matrix = self.camera.projection_matrix(aspect)
         self._frustum_culler.update_from_camera(view_matrix, proj_matrix, aspect)
 
-        # Draw sky gradient first (fullscreen background)
+        # Draw sky gradient first (fullscreen background, no lighting)
+        glDisable(GL_LIGHTING)
         self._draw_sky_gradient()
 
         glLoadIdentity()
@@ -271,23 +292,40 @@ class Renderer(QOpenGLWidget):
                   target[0], target[1], target[2],
                   up[0], up[1], up[2])
 
-        # Draw ground in 3D space
+        # Draw ground and connections without lighting
         self._draw_ground_grid()
-
-        # Draw connections
         self._draw_connections()
 
-        # Draw platforms first (opaque) - with spotlight effects
+        # Enable lighting for 3D objects
+        glEnable(GL_LIGHTING)
+
+        # === Opaque pass: platforms (directories) ===
         for platform in self._platforms:
             self._draw_cube_with_spotlight(platform)
+        glDisable(GL_LIGHTING)
+        for platform in self._platforms:
             self._draw_cube_edges(platform)
+        glEnable(GL_LIGHTING)
 
         # Draw directory labels on platforms (SGI fsn style)
+        glDisable(GL_LIGHTING)
         self._draw_directory_labels()
+        glEnable(GL_LIGHTING)
 
-        # Render all cubes (files) - with spotlight effects
+        # === Translucent pass: file blocks (alpha=0.8) ===
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        glDepthMask(GL_FALSE)
+
         for cube in self._cubes:
             self._draw_cube_with_spotlight(cube)
+
+        glDepthMask(GL_TRUE)
+        glDisable(GL_BLEND)
+
+        # Draw file edges on top (opaque, crisp lines over translucent faces)
+        glDisable(GL_LIGHTING)
+        for cube in self._cubes:
             self._draw_cube_edges(cube)
 
         # Draw spotlights for selection (transparent)
@@ -310,10 +348,10 @@ class Renderer(QOpenGLWidget):
 
         # Ground plane (Rich green gradient, FSN grass-like)
         glBegin(GL_QUADS)
-        glColor4f(0.25, 0.5, 0.25, 1.0)  # Near green
+        glColor4f(0.2, 0.45, 0.2, 1.0)  # Near green
         glVertex3f(-ground_size, ground_y, -ground_size)
         glVertex3f(ground_size, ground_y, -ground_size)
-        glColor4f(0.18, 0.4, 0.18, 1.0)  # Far green (gradient)
+        glColor4f(0.15, 0.38, 0.15, 1.0)  # Far green (gradient)
         glVertex3f(ground_size, ground_y, ground_size)
         glVertex3f(-ground_size, ground_y, ground_size)
         glEnd()
@@ -321,8 +359,8 @@ class Renderer(QOpenGLWidget):
         # Grid lines - more subtle and sparser
         glLineWidth(1.0)
         glColor4f(0.28, 0.48, 0.28, 0.25)  # Very subtle grid
-        grid_spacing = 40.0
-        grid_range = 10
+        grid_spacing = 20.0
+        grid_range = 25
 
         glBegin(GL_LINES)
         for i in range(-grid_range, grid_range + 1):
@@ -356,8 +394,8 @@ class Renderer(QOpenGLWidget):
         glColor4f(0.6, 0.8, 1.0, 1.0)
         glVertex3f(-1.0, -1.0, -0.999)
         glVertex3f(1.0, -1.0, -0.999)
-        # Top - medium blue (not too dark)
-        glColor4f(0.3, 0.5, 0.9, 1.0)
+        # Top - deeper blue (SGI classic)
+        glColor4f(0.15, 0.25, 0.65, 1.0)
         glVertex3f(1.0, 1.0, -0.999)
         glVertex3f(-1.0, 1.0, -0.999)
         glEnd()
@@ -372,6 +410,13 @@ class Renderer(QOpenGLWidget):
 
     def _draw_connections(self) -> None:
         """Draw wire connections between platforms with highlighting and pulse effect (PR-4)."""
+        # Check if theme uses static wires (SGI Classic style)
+        use_static = self._theme and hasattr(self._theme, 'static_wires') and self._theme.static_wires
+
+        if use_static:
+            self._draw_static_connections()
+            return
+
         # Wire pulse configuration
         pulse_speed = 2.0
         pulse_intensity = 0.3
@@ -396,12 +441,12 @@ class Renderer(QOpenGLWidget):
 
         glColor4f(r, g, b, 0.4)
 
-        glBegin(GL_LINES)
-        for i, (start, end) in enumerate(self._connections):
+        for i, polyline in enumerate(self._connections):
             if i not in self._selected_connections:
-                glVertex3fv(start)
-                glVertex3fv(end)
-        glEnd()
+                glBegin(GL_LINE_STRIP)
+                for pt in polyline:
+                    glVertex3fv(pt)
+                glEnd()
 
         # Draw selected connections with highlight style and stronger pulse (PR-4)
         if self._selected_connections:
@@ -419,13 +464,13 @@ class Renderer(QOpenGLWidget):
 
             glColor4f(sel_r, sel_g, sel_b, 0.9)
 
-            glBegin(GL_LINES)
             for i in self._selected_connections:
                 if i < len(self._connections):
-                    start, end = self._connections[i]
-                    glVertex3fv(start)
-                    glVertex3fv(end)
-            glEnd()
+                    polyline = self._connections[i]
+                    glBegin(GL_LINE_STRIP)
+                    for pt in polyline:
+                        glVertex3fv(pt)
+                    glEnd()
 
             # Add animated glow effect for selected wires
             glLineWidth(8.0)
@@ -438,13 +483,13 @@ class Renderer(QOpenGLWidget):
 
             glColor4f(glow_r, glow_g, glow_b, 0.2 + glow_pulse * 0.2)
 
-            glBegin(GL_LINES)
             for i in self._selected_connections:
                 if i < len(self._connections):
-                    start, end = self._connections[i]
-                    glVertex3fv(start)
-                    glVertex3fv(end)
-            glEnd()
+                    polyline = self._connections[i]
+                    glBegin(GL_LINE_STRIP)
+                    for pt in polyline:
+                        glVertex3fv(pt)
+                    glEnd()
 
             # Add traveling pulse effect along the wire
             glLineWidth(2.0)
@@ -456,15 +501,11 @@ class Renderer(QOpenGLWidget):
             # Draw small segments for traveling pulse
             for i in self._selected_connections:
                 if i < len(self._connections):
-                    start, end = self._connections[i]
-                    direction = end - start
-                    length = np.linalg.norm(direction)
+                    polyline = self._connections[i]
+                    length = self._polyline_length(polyline)
                     if length > 0:
-                        direction = direction / length
-                        # Calculate pulse position along the wire
-                        pulse_pos = start + direction * (length * travel_phase)
+                        pulse_pos, direction = self._interpolate_polyline(polyline, travel_phase)
 
-                        # Draw a small glowing segment at the pulse position
                         segment_length = min(length * 0.1, 2.0)
                         seg_start = pulse_pos - direction * segment_length * 0.5
                         seg_end = pulse_pos + direction * segment_length * 0.5
@@ -475,6 +516,37 @@ class Renderer(QOpenGLWidget):
                         glEnd()
 
             glDisable(GL_BLEND)
+
+    def _draw_static_connections(self) -> None:
+        """Draw simple static wire connections (SGI Classic style - no pulse/animation)."""
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+
+        # Draw non-selected connections as simple white lines
+        glLineWidth(1.5)
+        glColor4f(1.0, 1.0, 1.0, 0.6)
+
+        for i, polyline in enumerate(self._connections):
+            if i not in self._selected_connections:
+                glBegin(GL_LINE_STRIP)
+                for pt in polyline:
+                    glVertex3fv(pt)
+                glEnd()
+
+        # Draw selected connections with highlight (but no animation)
+        if self._selected_connections:
+            glLineWidth(3.0)
+            glColor4f(1.0, 1.0, 0.6, 0.9)
+
+            for i in self._selected_connections:
+                if i < len(self._connections):
+                    polyline = self._connections[i]
+                    glBegin(GL_LINE_STRIP)
+                    for pt in polyline:
+                        glVertex3fv(pt)
+                    glEnd()
+
+        glDisable(GL_BLEND)
 
     def _draw_selection_spotlights(self) -> None:
         """Draw spotlights over selected items."""
@@ -534,7 +606,7 @@ class Renderer(QOpenGLWidget):
         glEnd()
 
     def _draw_cube(self, cube: CubeInstance) -> None:
-        """Draw a single cube with emission-based glow and 3D face shading."""
+        """Draw a single cube with OpenGL material-based lighting."""
         x, y, z = cube.position
         w, h, d = cube.scale
         r, g, b, a = cube.color
@@ -542,62 +614,73 @@ class Renderer(QOpenGLWidget):
         # Apply emission-based glow effect
         r, g, b, a = self._bloom.apply_glow(r, g, b, a, cube.emission)
 
-        # Per-face shading factors (simulate simple directional lighting)
-        top_f = 1.0     # Top face: brightest
-        front_f = 0.85  # Front face: slightly dimmer
-        side_f = 0.7    # Side faces: medium
-        back_f = 0.55   # Back face: darker
-        bottom_f = 0.4  # Bottom face: darkest
+        # Set material properties (OpenGL lighting handles shading per-face via normals)
+        diffuse = [r, g, b, a]
+        ambient = [r * 0.4, g * 0.4, b * 0.4, a]
+        shininess = cube.shininess
+
+        # Files get glossy specular (plastic look), platforms get matte
+        if shininess > 10:
+            specular = [0.8, 0.8, 0.8, 1.0]
+        else:
+            specular = [0.2, 0.2, 0.2, 1.0]
+
+        # Emission for glow effects
+        emission_val = cube.emission * 0.3
+        emission_color = [r * emission_val, g * emission_val, b * emission_val, 1.0]
+
+        glMaterialfv(GL_FRONT_AND_BACK, GL_DIFFUSE, diffuse)
+        glMaterialfv(GL_FRONT_AND_BACK, GL_AMBIENT, ambient)
+        glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR, specular)
+        glMaterialf(GL_FRONT_AND_BACK, GL_SHININESS, min(shininess, 128.0))
+        glMaterialfv(GL_FRONT_AND_BACK, GL_EMISSION, emission_color)
 
         glPushMatrix()
         glTranslatef(x, y, z)
         glScalef(w, h, d)
 
-        # Draw cube faces
+        # Draw cube faces with normals (lighting calculates shading)
         glBegin(GL_QUADS)
         # Front face
-        glColor4f(r * front_f, g * front_f, b * front_f, a)
         glNormal3f(0, 0, 1)
         glVertex3f(-0.5, -0.5, 0.5)
         glVertex3f(0.5, -0.5, 0.5)
         glVertex3f(0.5, 0.5, 0.5)
         glVertex3f(-0.5, 0.5, 0.5)
         # Back face
-        glColor4f(r * back_f, g * back_f, b * back_f, a)
         glNormal3f(0, 0, -1)
         glVertex3f(0.5, -0.5, -0.5)
         glVertex3f(-0.5, -0.5, -0.5)
         glVertex3f(-0.5, 0.5, -0.5)
         glVertex3f(0.5, 0.5, -0.5)
         # Top face
-        glColor4f(r * top_f, g * top_f, b * top_f, a)
         glNormal3f(0, 1, 0)
         glVertex3f(-0.5, 0.5, 0.5)
         glVertex3f(0.5, 0.5, 0.5)
         glVertex3f(0.5, 0.5, -0.5)
         glVertex3f(-0.5, 0.5, -0.5)
         # Bottom face
-        glColor4f(r * bottom_f, g * bottom_f, b * bottom_f, a)
         glNormal3f(0, -1, 0)
         glVertex3f(-0.5, -0.5, -0.5)
         glVertex3f(0.5, -0.5, -0.5)
         glVertex3f(0.5, -0.5, 0.5)
         glVertex3f(-0.5, -0.5, 0.5)
         # Right face
-        glColor4f(r * side_f, g * side_f, b * side_f, a)
         glNormal3f(1, 0, 0)
         glVertex3f(0.5, -0.5, 0.5)
         glVertex3f(0.5, -0.5, -0.5)
         glVertex3f(0.5, 0.5, -0.5)
         glVertex3f(0.5, 0.5, 0.5)
         # Left face
-        glColor4f(r * side_f, g * side_f, b * side_f, a)
         glNormal3f(-1, 0, 0)
         glVertex3f(-0.5, -0.5, -0.5)
         glVertex3f(-0.5, -0.5, 0.5)
         glVertex3f(-0.5, 0.5, 0.5)
         glVertex3f(-0.5, 0.5, -0.5)
         glEnd()
+
+        # Reset emission to zero
+        glMaterialfv(GL_FRONT_AND_BACK, GL_EMISSION, [0.0, 0.0, 0.0, 1.0])
 
         glPopMatrix()
 
@@ -748,21 +831,21 @@ class Renderer(QOpenGLWidget):
         glEnable(GL_POLYGON_OFFSET_LINE)
         glPolygonOffset(-1.0, -1.0)  # Pull lines toward camera
 
-        glLineWidth(1.5)
-
         # Dark edge color - computed from cube color
         r, g, b, a = cube.color
-        
+
         # Check if this is a platform (pedestal)
         # Platforms have distinct edge behavior in FSN (brighter/outlined)
         is_platform = cube.scale[1] < 1.0 and cube.scale[0] > 2.0
-        
+
         if is_platform:
-            # Highlight edges for pedestals (bright blue/white tint)
-            edge_color = [min(1.0, r * 1.3), min(1.0, g * 1.3), min(1.0, b * 1.3), a]
+            # Highlight edges for pedestals (white-ish bright edges, SGI fsn style)
+            edge_color = [min(1.0, r * 0.5 + 0.5), min(1.0, g * 0.5 + 0.5), min(1.0, b * 0.5 + 0.5), a]
+            glLineWidth(2.0)  # Thicker edges for platforms
         else:
             # Standard dark edges for file cubes
             edge_color = [r * 0.3, g * 0.3, b * 0.3, a]
+            glLineWidth(1.5)
             
         glColor4fv(edge_color)
 
@@ -893,9 +976,9 @@ class Renderer(QOpenGLWidget):
         ], dtype=np.float32)
 
         scale_array = np.array([
-            position.width * 0.8,
+            position.width * 0.5,
             height,
-            position.depth * 0.8,
+            position.depth * 0.5,
         ], dtype=np.float32)
 
         if path_str in selection:
@@ -907,6 +990,9 @@ class Renderer(QOpenGLWidget):
         else:
             color = np.array([0.6, 0.6, 0.7, 1.0], dtype=np.float32)
 
+        # Semi-transparent file blocks (SGI fsn style translucency)
+        color[3] = 0.8
+
         emission = self._calculate_emission(node)
 
         cube = CubeInstance(position=pos_array, scale=scale_array, color=color, shininess=50.0, emission=emission)
@@ -915,7 +1001,7 @@ class Renderer(QOpenGLWidget):
         self._cubes.append(cube)
 
     def _build_connections(self, layout_result, nodes: dict[str, Node]) -> None:
-        """Build wire connections between directory platforms."""
+        """Build wire connections between directory platforms with L-shaped routing."""
         for parent_path, child_path in layout_result.connections:
             if parent_path not in nodes or child_path not in nodes:
                 continue
@@ -927,20 +1013,63 @@ class Renderer(QOpenGLWidget):
                 parent_pos = layout_result.positions[parent_path]
                 child_pos = layout_result.positions[child_path]
 
-                start_pos = np.array([
-                    parent_pos.x + parent_pos.width / 2,
-                    0.05,
-                    parent_pos.z  # Back face (Min Z)
-                ], dtype=np.float32)
+                parent_cx = parent_pos.x + parent_pos.width / 2
+                child_cx = child_pos.x + child_pos.width / 2
+                parent_min_z = parent_pos.z  # Back face
+                child_max_z = child_pos.z + child_pos.depth  # Front face
 
-                end_pos = np.array([
-                    child_pos.x + child_pos.width / 2,
-                    0.05,
-                    child_pos.z + child_pos.depth  # Front face (Max Z)
-                ], dtype=np.float32)
+                start = np.array([parent_cx, 0.05, parent_min_z], dtype=np.float32)
+                end = np.array([child_cx, 0.05, child_max_z], dtype=np.float32)
 
-                self._connections.append((start_pos, end_pos))
-                self._connection_metadata.append((parent_path, child_path))  # PR-4: Store metadata
+                if abs(parent_cx - child_cx) < 0.01:
+                    polyline = [start, end]
+                else:
+                    mid_z = (parent_min_z + child_max_z) / 2.0
+                    elbow1 = np.array([parent_cx, 0.05, mid_z], dtype=np.float32)
+                    elbow2 = np.array([child_cx, 0.05, mid_z], dtype=np.float32)
+                    polyline = [start, elbow1, elbow2, end]
+
+                self._connections.append(polyline)
+                self._connection_metadata.append((parent_path, child_path))
+
+    def _interpolate_polyline(self, polyline: list[np.ndarray], t: float) -> tuple[np.ndarray, np.ndarray]:
+        """Interpolate position and direction along a polyline at parameter t in [0,1]."""
+        if len(polyline) < 2:
+            return polyline[0], np.array([0, 0, 1], dtype=np.float32)
+
+        # Calculate cumulative segment lengths
+        segments = []
+        total_length = 0.0
+        for j in range(len(polyline) - 1):
+            seg_len = float(np.linalg.norm(polyline[j + 1] - polyline[j]))
+            segments.append(seg_len)
+            total_length += seg_len
+
+        if total_length < 1e-6:
+            return polyline[0], np.array([0, 0, 1], dtype=np.float32)
+
+        target_dist = t * total_length
+        accumulated = 0.0
+        for j, seg_len in enumerate(segments):
+            if accumulated + seg_len >= target_dist or j == len(segments) - 1:
+                local_t = (target_dist - accumulated) / seg_len if seg_len > 1e-6 else 0.0
+                local_t = max(0.0, min(1.0, local_t))
+                pos = polyline[j] + (polyline[j + 1] - polyline[j]) * local_t
+                direction = polyline[j + 1] - polyline[j]
+                norm = float(np.linalg.norm(direction))
+                if norm > 1e-6:
+                    direction = direction / norm
+                return pos, direction
+            accumulated += seg_len
+
+        return polyline[-1], np.array([0, 0, 1], dtype=np.float32)
+
+    def _polyline_length(self, polyline: list[np.ndarray]) -> float:
+        """Calculate total length of a polyline."""
+        total = 0.0
+        for j in range(len(polyline) - 1):
+            total += float(np.linalg.norm(polyline[j + 1] - polyline[j]))
+        return total
 
     def _on_timer(self) -> None:
         """Timer callback for animation."""
@@ -1181,10 +1310,9 @@ class Renderer(QOpenGLWidget):
         end_pos = None
         if block_top is not None:
             current_pos = self.camera.state.position.copy()
-            current_target = self.camera.state.target.copy()
 
-            # Preserve current horizontal azimuth direction
-            horiz = current_pos - current_target
+            # Direction from file center to current camera (keeps camera on same side)
+            horiz = current_pos - center
             horiz[1] = 0.0
             horiz_norm = np.linalg.norm(horiz)
             if horiz_norm > 0.001:
@@ -1201,12 +1329,17 @@ class Renderer(QOpenGLWidget):
             if end_pos[1] < min_cam_y:
                 end_pos[1] = min_cam_y
 
-        # Animate camera to new position over ~300ms
-        self._animate_camera_to(center, distance, end_pos=end_pos, duration_ms=300)
+        # Directory navigation: cinematic flythrough (800ms)
+        # File selection: quick snap (300ms)
+        is_directory = target_node.is_directory
+        duration = 800 if is_directory else 300
+        self._animate_camera_to(center, distance, end_pos=end_pos, duration_ms=duration,
+                                cinematic=is_directory)
 
     def _animate_camera_to(self, target: np.ndarray, distance: float,
                           end_pos: np.ndarray | None = None,
-                          duration_ms: int = 300) -> None:
+                          duration_ms: int = 300,
+                          cinematic: bool = False) -> None:
         """Animate camera to look at a target position.
 
         Args:
@@ -1214,6 +1347,7 @@ class Renderer(QOpenGLWidget):
             distance: Distance from target
             end_pos: Optional explicit camera end position (auto-calculated if None)
             duration_ms: Animation duration in milliseconds
+            cinematic: Use cinematic flythrough with arc trajectory
         """
         # Store animation state
         self._animation_start_time = time.time()
@@ -1235,12 +1369,34 @@ class Renderer(QOpenGLWidget):
 
             self._animation_end_pos = target + direction * distance
 
+        # Build waypoints for cinematic flythrough
+        self._animation_cinematic = cinematic
+        if cinematic:
+            self._build_flythrough_waypoints()
+
         # Enable animation flag
         self._is_animating = True
 
         # Ensure timer is running
         if not self._update_timer.isActive():
             self._update_timer.start(16)
+
+    def _build_flythrough_waypoints(self) -> None:
+        """Build control point for cinematic camera flythrough arc.
+
+        Uses a quadratic Bezier curve with a single elevated control point
+        at the midpoint for a smooth arc trajectory without segment boundaries.
+        """
+        start = self._animation_start_pos.copy()
+        end = self._animation_end_pos.copy()
+        travel_dist = np.linalg.norm(end - start)
+
+        # Control point: midpoint elevated above the higher endpoint
+        control = (start + end) * 0.5
+        arc_height = min(travel_dist * 0.15, 8.0)
+        control[1] = max(start[1], end[1]) + arc_height
+
+        self._animation_control_point = control
 
     def _on_timer(self) -> None:
         """Timer callback for animation."""
@@ -1256,17 +1412,25 @@ class Renderer(QOpenGLWidget):
             elapsed = time.time() - self._animation_start_time
             progress = min(1.0, elapsed / self._animation_duration)
 
-            # Ease-in-out function
+            # Global ease-in-out
             t = progress
             ease = t * t * (3.0 - 2.0 * t)
 
-            # Interpolate position and target
-            new_pos = (1 - ease) * self._animation_start_pos + ease * self._animation_end_pos
+            # Calculate camera position
+            if hasattr(self, '_animation_cinematic') and self._animation_cinematic and hasattr(self, '_animation_control_point'):
+                # Quadratic Bezier: P(t) = (1-t)²·start + 2(1-t)t·control + t²·end
+                s = self._animation_start_pos
+                c = self._animation_control_point
+                e = self._animation_end_pos
+                inv = 1.0 - ease
+                new_pos = inv * inv * s + 2.0 * inv * ease * c + ease * ease * e
+            else:
+                new_pos = (1 - ease) * self._animation_start_pos + ease * self._animation_end_pos
+
+            # Target always interpolates linearly
             new_target = (1 - ease) * self._animation_start_target + ease * self._animation_end_target
 
-            self.camera._state.position = new_pos
-            self.camera._state.target = new_target
-            self.camera._update_orbit_from_position()
+            self.camera.set_position_target(new_pos, new_target)
 
             # Check if animation complete
             if progress >= 1.0:

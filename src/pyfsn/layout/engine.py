@@ -50,9 +50,9 @@ class LayoutConfig:
     connection_width: float = 0.1
     # SGI fsn style height settings
     use_size_height: bool = True
-    min_height: float = 0.2
-    max_height: float = 5.0
-    height_scale: float = 0.3
+    min_height: float = 0.5
+    max_height: float = 8.0
+    height_scale: float = 0.5
 
 
 @dataclass

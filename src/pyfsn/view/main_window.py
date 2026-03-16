@@ -1121,6 +1121,7 @@ class MainWindow(QMainWindow):
     go_forward_requested = pyqtSignal()
     filter_changed = pyqtSignal(dict)
     tree_node_double_clicked = pyqtSignal(object)
+    sound_toggled = pyqtSignal(bool)
 
     def __init__(self, root_path: Path) -> None:
         """Initialize main window.
@@ -1300,6 +1301,14 @@ class MainWindow(QMainWindow):
         self._toggle_labels_action.setShortcut("Ctrl+L")
         self._toggle_labels_action.triggered.connect(self._toggle_labels)
         view_menu.addAction(self._toggle_labels_action)
+
+        view_menu.addSeparator()
+
+        self._toggle_sound_action = QAction("&Sound Effects", self)
+        self._toggle_sound_action.setCheckable(True)
+        self._toggle_sound_action.setChecked(False)
+        self._toggle_sound_action.triggered.connect(lambda checked: self.sound_toggled.emit(checked))
+        view_menu.addAction(self._toggle_sound_action)
 
         view_menu.addSeparator()
 

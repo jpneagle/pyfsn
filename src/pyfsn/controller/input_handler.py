@@ -109,6 +109,7 @@ class InputHandler:
         self._on_navigate_next: Callable[[], None] | None = None
         self._on_navigate_previous: Callable[[], None] | None = None
         self._camera_mode_changed_callback: Callable[[CameraMode], None] | None = None
+        self._context_menu_callback: Callable[[Node | None, QPoint], None] | None = None
 
         # Selection state
         self._selected_nodes: set[int] = set()
@@ -193,6 +194,14 @@ class InputHandler:
         """
         self._camera_mode_changed_callback = callback
 
+    def set_context_menu_callback(self, callback: Callable) -> None:
+        """Set callback for context menu (right-click).
+
+        Args:
+            callback: Function receiving (node_or_None, screen_pos)
+        """
+        self._context_menu_callback = callback
+
     # Mouse event handlers
 
     def mouse_press_event(self, event: QMouseEvent) -> bool:
@@ -249,6 +258,13 @@ class InputHandler:
                 # Already handled in press event
                 pass
             self._state.is_dragging = False
+
+        # Right-click context menu (no drag)
+        if button == MouseButton.RIGHT:
+            drag_dist = (event.pos() - self._state.mouse_drag_start).manhattanLength()
+            if drag_dist < self._state.drag_threshold and self._context_menu_callback:
+                node = self._raycast_find_node(event.pos())
+                self._context_menu_callback(node, event.globalPosition().toPoint())
 
         # Reset drag state when any button is released
         if not any(self._state.mouse_pressed):

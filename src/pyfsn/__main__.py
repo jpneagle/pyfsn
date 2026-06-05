@@ -32,8 +32,8 @@ def parse_args() -> argparse.Namespace:
         "path",
         nargs="?",
         type=Path,
-        default=Path.cwd(),
-        help="Root directory path to visualize (default: current directory)",
+        default=None,
+        help="Root directory path to visualize (default: last used or current directory)",
     )
     parser.add_argument(
         "--renderer",
@@ -100,8 +100,16 @@ def main() -> int:
     """
     args = parse_args()
 
-    # Resolve the root path
-    root_path = args.path.resolve()
+    # Resolve the root path. With no explicit path, prefer the last used
+    # directory (persisted across sessions), falling back to the cwd.
+    if args.path is not None:
+        root_path = args.path.resolve()
+    else:
+        from PyQt6.QtCore import QSettings
+
+        last = QSettings("pyfsn", "pyfsn").value("last_path", "", type=str)
+        candidate = Path(last) if last else Path.cwd()
+        root_path = candidate.resolve() if candidate.exists() else Path.cwd().resolve()
 
     # Validate the path
     if not root_path.exists():

@@ -23,9 +23,23 @@ from PyQt6.QtWidgets import (
     QTreeWidgetItem,
     QSplitter,
     QTextEdit,
+    QProgressBar,
+    QInputDialog,
+    QMessageBox,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QThread, QObject
-from PyQt6.QtGui import QAction, QKeyEvent, QPainter, QColor, QFont, QPixmap, QImage
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QThread, QObject, QSettings
+from PyQt6.QtGui import (
+    QAction,
+    QActionGroup,
+    QKeyEvent,
+    QKeySequence,
+    QShortcut,
+    QPainter,
+    QColor,
+    QFont,
+    QPixmap,
+    QImage,
+)
 import sys
 
 from pyfsn.view.renderer import Renderer
@@ -239,6 +253,13 @@ class FileAgeLegend(QWidget):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self._colorblind = False
+
+    def set_colorblind(self, enabled: bool) -> None:
+        """Toggle the colorblind-friendly swatch palette."""
+        if self._colorblind != enabled:
+            self._colorblind = enabled
+            self.update()
 
     def paintEvent(self, event) -> None:
         """Paint the legend."""
@@ -265,13 +286,22 @@ class FileAgeLegend(QWidget):
         font = QFont("Arial", 10)
         painter.setFont(font)
 
-        entries = [
-            (QColor(51, 255, 51), "< 24h"),
-            (QColor(51, 204, 255), "< 7d"),
-            (QColor(204, 204, 51), "< 30d"),
-            (QColor(255, 153, 51), "< 365d"),
-            (QColor(153, 76, 51), ">= 365d"),
-        ]
+        if self._colorblind:
+            entries = [
+                (QColor(69, 120, 181), "< 24h"),
+                (QColor(102, 194, 165), "< 7d"),
+                (QColor(237, 237, 107), "< 30d"),
+                (QColor(245, 158, 77), "< 365d"),
+                (QColor(140, 87, 74), ">= 365d"),
+            ]
+        else:
+            entries = [
+                (QColor(51, 255, 51), "< 24h"),
+                (QColor(51, 204, 255), "< 7d"),
+                (QColor(204, 204, 51), "< 30d"),
+                (QColor(255, 153, 51), "< 365d"),
+                (QColor(153, 76, 51), ">= 365d"),
+            ]
 
         for i, (color, label) in enumerate(entries):
             y_pos = y + 40 + i * 17
@@ -762,6 +792,8 @@ class ControlPanel(QWidget):
     refresh_requested = pyqtSignal()
     navigate_up = pyqtSignal()
     navigate_home = pyqtSignal()
+    navigate_back = pyqtSignal()
+    navigate_forward = pyqtSignal()
     show_tree_toggled = pyqtSignal(bool)
     filter_panel_toggled = pyqtSignal(bool)
     labels_toggled = pyqtSignal(bool)
@@ -794,6 +826,18 @@ class ControlPanel(QWidget):
         layout.addWidget(QLabel("<b>Navigation:</b>"))
 
         nav_layout = QHBoxLayout()
+        self._back_btn = QPushButton("←")
+        self._back_btn.setFixedWidth(40)
+        self._back_btn.setToolTip("Go back (Alt+Left)")
+        self._back_btn.setEnabled(False)
+        nav_layout.addWidget(self._back_btn)
+
+        self._forward_btn = QPushButton("→")
+        self._forward_btn.setFixedWidth(40)
+        self._forward_btn.setToolTip("Go forward (Alt+Right)")
+        self._forward_btn.setEnabled(False)
+        nav_layout.addWidget(self._forward_btn)
+
         self._up_btn = QPushButton("↑")
         self._up_btn.setFixedWidth(40)
         self._up_btn.setToolTip("Navigate to parent directory")
@@ -834,6 +878,8 @@ class ControlPanel(QWidget):
         layout.addWidget(self._refresh_btn)
 
         # Connect navigation signals
+        self._back_btn.clicked.connect(self.navigate_back.emit)
+        self._forward_btn.clicked.connect(self.navigate_forward.emit)
         self._up_btn.clicked.connect(self.navigate_up.emit)
         self._home_btn.clicked.connect(self.navigate_home.emit)
         self._refresh_btn.clicked.connect(self.refresh_requested.emit)
@@ -889,9 +935,14 @@ class ControlPanel(QWidget):
         self._stats_label.setStyleSheet("font-size: 10px;")
         layout.addWidget(self._stats_label)
 
+    def set_navigation_state(self, can_go_back: bool, can_go_forward: bool) -> None:
+        """Enable/disable the back and forward buttons."""
+        self._back_btn.setEnabled(can_go_back)
+        self._forward_btn.setEnabled(can_go_forward)
+
     def set_camera_mode_display(self, mode: CameraMode) -> None:
         """Update camera mode display and UI state.
-        
+
         Args:
             mode: Current camera mode
         """
@@ -1110,6 +1161,134 @@ class FileTreeWidget(QTreeWidget):
                 parent.setExpanded(True)
 
 
+class BreadcrumbBar(QWidget):
+    """Clickable path breadcrumb bar shown above the 3D view.
+
+    Each path segment is a button; clicking it navigates to that directory.
+    """
+
+    path_clicked = pyqtSignal(Path)
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setStyleSheet("background: #232323;")
+        self._layout = QHBoxLayout(self)
+        self._layout.setContentsMargins(8, 2, 8, 2)
+        self._layout.setSpacing(0)
+        self._layout.addStretch()
+        self._current_path: Path | None = None
+
+    def set_path(self, path: Path) -> None:
+        """Rebuild the breadcrumb for the given path."""
+        self._current_path = path
+        # Clear existing widgets
+        while self._layout.count():
+            item = self._layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+
+        parts = list(path.parts)
+        accumulated = Path(parts[0]) if parts else path
+        for i, part in enumerate(parts):
+            if i > 0:
+                accumulated = accumulated / part
+            seg_path = accumulated
+            label = part if part not in ("/", "\\") else "/"
+            btn = QPushButton(label)
+            btn.setFlat(True)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            is_last = (i == len(parts) - 1)
+            color = "#ffd27f" if is_last else "#cccccc"
+            weight = "bold" if is_last else "normal"
+            btn.setStyleSheet(
+                f"QPushButton {{ color: {color}; font-weight: {weight}; border: none; "
+                f"padding: 2px 6px; background: transparent; }}"
+                "QPushButton:hover { color: #ffffff; text-decoration: underline; }"
+            )
+            btn.clicked.connect(lambda _checked, p=seg_path: self.path_clicked.emit(p))
+            self._layout.addWidget(btn)
+            if not is_last:
+                sep = QLabel("›")
+                sep.setStyleSheet("color: #666666;")
+                self._layout.addWidget(sep)
+
+        self._layout.addStretch()
+
+
+class OnboardingOverlay(QWidget):
+    """First-run tips overlay shown over the 3D view.
+
+    Displays basic controls and a dismiss button. Intended to be shown once.
+    """
+
+    dismissed = pyqtSignal(bool)  # carries "don't show again" state
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet("OnboardingOverlay { background: rgba(0, 0, 0, 160); }")
+
+        outer = QVBoxLayout(self)
+        outer.addStretch()
+        row = QHBoxLayout()
+        row.addStretch()
+
+        card = QWidget()
+        card.setMaximumWidth(460)
+        card.setStyleSheet(
+            "background: #1e1e28; border: 1px solid #4a6a8a; border-radius: 10px;"
+        )
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(24, 20, 24, 20)
+        card_layout.setSpacing(10)
+
+        title = QLabel("Welcome to pyfsn")
+        title.setStyleSheet("color: #ffd27f; font-size: 18px; font-weight: bold;")
+        card_layout.addWidget(title)
+
+        tips = QLabel(
+            "<p style='color:#dddddd; font-size:12px; line-height:150%;'>"
+            "<b>It's a Unix system... I know this.</b><br><br>"
+            "• <b>Left-drag</b> — rotate the view<br>"
+            "• <b>Right-drag</b> — pan &nbsp;·&nbsp; <b>Scroll</b> — zoom<br>"
+            "• <b>Click</b> — select &nbsp;·&nbsp; <b>Double-click</b> — open / enter<br>"
+            "• <b>Right-click</b> — context menu<br>"
+            "• <b>Ctrl+K</b> — search &nbsp;·&nbsp; <b>Alt+←/→</b> — back / forward<br>"
+            "• <b>Fly Mode</b> button — first-person WASD flight"
+            "</p>"
+        )
+        tips.setWordWrap(True)
+        card_layout.addWidget(tips)
+
+        from PyQt6.QtWidgets import QCheckBox
+        self._dont_show = QCheckBox("Don't show this again")
+        self._dont_show.setChecked(True)
+        self._dont_show.setStyleSheet("color: #aaaaaa; font-size: 11px;")
+        card_layout.addWidget(self._dont_show)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        got_it = QPushButton("Got it")
+        got_it.setStyleSheet(
+            "QPushButton { background: #4a6a8a; color: white; font-weight: bold; "
+            "padding: 6px 18px; border-radius: 4px; }"
+            "QPushButton:hover { background: #5a7a9a; }"
+        )
+        got_it.clicked.connect(self._on_dismiss)
+        btn_row.addWidget(got_it)
+        card_layout.addLayout(btn_row)
+
+        row.addWidget(card)
+        row.addStretch()
+        outer.addLayout(row)
+        outer.addStretch()
+
+    def _on_dismiss(self) -> None:
+        self.dismissed.emit(self._dont_show.isChecked())
+        self.hide()
+
+
 class MainWindow(QMainWindow):
     """Main window for the pyfsn application."""
 
@@ -1122,6 +1301,10 @@ class MainWindow(QMainWindow):
     filter_changed = pyqtSignal(dict)
     tree_node_double_clicked = pyqtSignal(object)
     sound_toggled = pyqtSignal(bool)
+    theme_selected = pyqtSignal(str)
+    colorblind_toggled = pyqtSignal(bool)
+    bookmark_add_requested = pyqtSignal()
+    bookmark_selected = pyqtSignal(Path)
 
     def __init__(self, root_path: Path) -> None:
         """Initialize main window.
@@ -1142,9 +1325,15 @@ class MainWindow(QMainWindow):
         self._search_bar = None
         self._show_labels = True
 
+        # Persistent settings
+        self._settings = QSettings("pyfsn", "pyfsn")
+
         self._setup_ui()
         self._setup_menu_bar()
         self._connect_signals()
+        self._setup_shortcuts()
+        self._restore_settings()
+        self._maybe_show_onboarding()
 
     def _setup_ui(self) -> None:
         """Set up the user interface."""
@@ -1162,6 +1351,12 @@ class MainWindow(QMainWindow):
         self._search_bar = SearchBar()
         self._search_bar.setStyleSheet("padding: 8px; background: #2a2a2a; color: white;")
         main_layout.addWidget(self._search_bar)
+
+        # Breadcrumb path bar
+        self._breadcrumb = BreadcrumbBar()
+        self._breadcrumb.set_path(self._root_path)
+        self._breadcrumb.path_clicked.connect(self._on_breadcrumb_clicked)
+        main_layout.addWidget(self._breadcrumb)
 
         # Create main splitter for resizable panels
         main_splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -1202,6 +1397,13 @@ class MainWindow(QMainWindow):
                            self._renderer.height() - self._mini_map.height() - 10)
         self._mini_map.raise_()
 
+        # First-run onboarding overlay (covers the renderer, shown on demand)
+        self._onboarding = OnboardingOverlay(self._renderer)
+        self._onboarding.setGeometry(0, 0, self._renderer.width(), self._renderer.height())
+        self._onboarding.dismissed.connect(self._on_onboarding_dismissed)
+        self._onboarding.hide()
+        self._onboarding.raise_()
+
         renderer_layout.addWidget(self._renderer)
         view_layout.addWidget(renderer_container)
 
@@ -1213,6 +1415,7 @@ class MainWindow(QMainWindow):
 
         # Create file tree dock
         self._file_tree_dock = QDockWidget("File Tree", self)
+        self._file_tree_dock.setObjectName("FileTreeDock")
         self._file_tree_dock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea)
         self._file_tree = FileTreeWidget()
         self._file_tree_dock.setWidget(self._file_tree)
@@ -1221,6 +1424,7 @@ class MainWindow(QMainWindow):
 
         # Create filter panel dock (Workstream F - Advanced filtering)
         self._filter_panel_dock = QDockWidget("Filter Panel", self)
+        self._filter_panel_dock.setObjectName("FilterPanelDock")
         self._filter_panel_dock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea)
         self._filter_panel = FilterPanel()
         self._filter_panel_dock.setWidget(self._filter_panel)
@@ -1234,6 +1438,15 @@ class MainWindow(QMainWindow):
         self._status_bar = QStatusBar()
         self.setStatusBar(self._status_bar)
         self._status_bar.showMessage(f"Root: {self._root_path}")
+
+        # Indeterminate progress bar shown during scans
+        self._progress_bar = QProgressBar()
+        self._progress_bar.setRange(0, 0)  # Busy/indeterminate
+        self._progress_bar.setMaximumWidth(160)
+        self._progress_bar.setMaximumHeight(14)
+        self._progress_bar.setTextVisible(False)
+        self._progress_bar.hide()
+        self._status_bar.addPermanentWidget(self._progress_bar)
         
         # Default focus to search bar (Orbit Mode)
         self._search_bar.setFocus()
@@ -1310,11 +1523,70 @@ class MainWindow(QMainWindow):
         self._toggle_sound_action.triggered.connect(lambda checked: self.sound_toggled.emit(checked))
         view_menu.addAction(self._toggle_sound_action)
 
+        self._colorblind_action = QAction("&Colorblind Palette", self)
+        self._colorblind_action.setCheckable(True)
+        self._colorblind_action.setChecked(False)
+        self._colorblind_action.triggered.connect(
+            lambda checked: self.colorblind_toggled.emit(checked)
+        )
+        view_menu.addAction(self._colorblind_action)
+
+        view_menu.addSeparator()
+
+        # Theme submenu
+        theme_menu = view_menu.addMenu("&Theme")
+        self._theme_group = QActionGroup(self)
+        self._theme_group.setExclusive(True)
+        from pyfsn.view.theme import BUILTIN_THEMES
+        self._theme_actions: dict[str, QAction] = {}
+        for key, theme in BUILTIN_THEMES.items():
+            act = QAction(theme.name, self)
+            act.setCheckable(True)
+            act.triggered.connect(lambda _checked, k=key: self.theme_selected.emit(k))
+            self._theme_group.addAction(act)
+            theme_menu.addAction(act)
+            self._theme_actions[key] = act
+
         view_menu.addSeparator()
 
         reset_view_action = QAction("&Reset View", self)
+        reset_view_action.setShortcut("Home")
         reset_view_action.triggered.connect(self._reset_view)
         view_menu.addAction(reset_view_action)
+
+        # Go menu (history / hierarchy navigation)
+        go_menu = menubar.addMenu("&Go")
+
+        self._back_action = QAction("&Back", self)
+        self._back_action.setShortcut(QKeySequence.StandardKey.Back)
+        self._back_action.setEnabled(False)
+        self._back_action.triggered.connect(self.go_back_requested.emit)
+        go_menu.addAction(self._back_action)
+
+        self._forward_action = QAction("&Forward", self)
+        self._forward_action.setShortcut(QKeySequence.StandardKey.Forward)
+        self._forward_action.setEnabled(False)
+        self._forward_action.triggered.connect(self.go_forward_requested.emit)
+        go_menu.addAction(self._forward_action)
+
+        up_action = QAction("&Up", self)
+        up_action.setShortcut("Alt+Up")
+        up_action.triggered.connect(self._navigate_up)
+        go_menu.addAction(up_action)
+
+        home_action = QAction("&Home", self)
+        home_action.setShortcut("Alt+Home")
+        home_action.triggered.connect(self._navigate_home)
+        go_menu.addAction(home_action)
+
+        # Bookmarks menu
+        self._bookmarks_menu = menubar.addMenu("&Bookmarks")
+        add_bookmark_action = QAction("&Add Current Directory", self)
+        add_bookmark_action.setShortcut("Ctrl+D")
+        add_bookmark_action.triggered.connect(self.bookmark_add_requested.emit)
+        self._bookmarks_menu.addAction(add_bookmark_action)
+        self._bookmarks_menu.addSeparator()
+        self._rebuild_bookmarks_menu()
 
         # Help menu
         help_menu = menubar.addMenu("&Help")
@@ -1329,6 +1601,8 @@ class MainWindow(QMainWindow):
         self._control_panel.refresh_requested.connect(self._refresh_requested)
         self._control_panel.navigate_up.connect(self._navigate_up)
         self._control_panel.navigate_home.connect(self._navigate_home)
+        self._control_panel.navigate_back.connect(self.go_back_requested.emit)
+        self._control_panel.navigate_forward.connect(self.go_forward_requested.emit)
         self._control_panel.show_tree_toggled.connect(self._toggle_file_tree)
         self._control_panel.filter_panel_toggled.connect(self._toggle_filter_panel)
         self._control_panel.labels_toggled.connect(self._toggle_labels)
@@ -1431,8 +1705,6 @@ class MainWindow(QMainWindow):
 
     def _show_about(self) -> None:
         """Show about dialog."""
-        from PyQt6.QtWidgets import QMessageBox
-
         QMessageBox.about(
             self,
             "About pyfsn",
@@ -1453,6 +1725,12 @@ class MainWindow(QMainWindow):
             "<p>Menu Shortcuts:</p>"
             "<ul>"
             "<li>Ctrl+O: Open directory</li>"
+            "<li>Ctrl+K or /: Focus search</li>"
+            "<li>Alt+Left / Alt+Right: Back / Forward</li>"
+            "<li>Alt+Up or Backspace: Parent directory</li>"
+            "<li>Ctrl+D: Bookmark current directory</li>"
+            "<li>Home: Reset view &nbsp; F: Toggle Fly Mode</li>"
+            "<li>Esc: Clear search / selection</li>"
             "<li>F5: Refresh</li>"
             "<li>Ctrl+T: Toggle file tree</li>"
             "<li>Ctrl+F: Toggle filter panel</li>"
@@ -1489,6 +1767,172 @@ class MainWindow(QMainWindow):
         if self._renderer:
             self._renderer.set_camera_mode(mode)
             self._control_panel.set_camera_mode_display(mode)
+
+    # Shortcuts, settings, onboarding, bookmarks
+
+    def _setup_shortcuts(self) -> None:
+        """Register global keyboard shortcuts not tied to menu items."""
+        # Focus the search bar
+        for seq in ("Ctrl+K", "/"):
+            sc = QShortcut(QKeySequence(seq), self)
+            sc.activated.connect(self._focus_search)
+        # Escape clears search and selection
+        esc = QShortcut(QKeySequence("Escape"), self)
+        esc.activated.connect(self._on_escape)
+        # Toggle Fly Mode
+        fly = QShortcut(QKeySequence("F"), self)
+        fly.activated.connect(self._toggle_fly_shortcut)
+        # Navigate to parent (Backspace)
+        up = QShortcut(QKeySequence("Backspace"), self)
+        up.activated.connect(self._navigate_up)
+
+    def _focus_search(self) -> None:
+        if self._search_bar is not None:
+            self._search_bar.setFocus()
+            self._search_bar.selectAll()
+
+    def _on_escape(self) -> None:
+        if self._search_bar is not None and self._search_bar.text():
+            self._search_bar.clear()
+        elif self._renderer is not None:
+            self._renderer.clear_selection()
+        if self._onboarding is not None and self._onboarding.isVisible():
+            self._onboarding.hide()
+
+    def _toggle_fly_shortcut(self) -> None:
+        # Don't toggle while typing in the search bar
+        if self._search_bar is not None and self._search_bar.hasFocus():
+            return
+        enabled = not self._control_panel._fly_mode_btn.isChecked()
+        self._control_panel._fly_mode_btn.setChecked(enabled)
+        self._on_fly_mode_toggled(enabled)
+
+    def _on_breadcrumb_clicked(self, path: Path) -> None:
+        if path != self._root_path:
+            self.directory_changed.emit(path)
+
+    def set_loading(self, busy: bool) -> None:
+        """Show or hide the indeterminate progress bar."""
+        if hasattr(self, "_progress_bar"):
+            self._progress_bar.setVisible(busy)
+
+    # --- Theme / colorblind UI sync ---
+
+    def set_active_theme(self, key: str) -> None:
+        """Check the menu item matching the active theme key."""
+        act = getattr(self, "_theme_actions", {}).get(key)
+        if act is not None:
+            act.setChecked(True)
+
+    def set_colorblind_checked(self, enabled: bool) -> None:
+        self._colorblind_action.setChecked(enabled)
+        if hasattr(self, "_file_age_legend") and self._file_age_legend:
+            self._file_age_legend.set_colorblind(enabled)
+
+    # --- Onboarding ---
+
+    def _maybe_show_onboarding(self) -> None:
+        seen = self._settings.value("onboarding/seen", False, type=bool)
+        if not seen:
+            QTimer.singleShot(300, self._show_onboarding)
+
+    def _show_onboarding(self) -> None:
+        if self._onboarding is not None and self._renderer is not None:
+            self._onboarding.setGeometry(
+                0, 0, self._renderer.width(), self._renderer.height()
+            )
+            self._onboarding.show()
+            self._onboarding.raise_()
+
+    def _on_onboarding_dismissed(self, dont_show_again: bool) -> None:
+        if dont_show_again:
+            self._settings.setValue("onboarding/seen", True)
+
+    # --- Bookmarks ---
+
+    def _load_bookmarks(self) -> list[str]:
+        value = self._settings.value("bookmarks", [], type=list)
+        return list(value) if value else []
+
+    def add_bookmark(self, path: Path) -> None:
+        bookmarks = self._load_bookmarks()
+        path_str = str(path)
+        if path_str not in bookmarks:
+            bookmarks.append(path_str)
+            self._settings.setValue("bookmarks", bookmarks)
+            self._rebuild_bookmarks_menu()
+            self.set_status_message(f"Bookmarked: {path_str}")
+        else:
+            self.set_status_message(f"Already bookmarked: {path_str}")
+
+    def _remove_bookmark(self, path_str: str) -> None:
+        bookmarks = self._load_bookmarks()
+        if path_str in bookmarks:
+            bookmarks.remove(path_str)
+            self._settings.setValue("bookmarks", bookmarks)
+            self._rebuild_bookmarks_menu()
+
+    def _rebuild_bookmarks_menu(self) -> None:
+        # Remove dynamic bookmark actions (keep the first two: add + separator)
+        actions = self._bookmarks_menu.actions()
+        for act in actions[2:]:
+            self._bookmarks_menu.removeAction(act)
+
+        bookmarks = self._load_bookmarks()
+        if not bookmarks:
+            empty = QAction("(no bookmarks)", self)
+            empty.setEnabled(False)
+            self._bookmarks_menu.addAction(empty)
+            return
+
+        for path_str in bookmarks:
+            p = Path(path_str)
+            act = QAction(p.name or path_str, self)
+            act.setToolTip(path_str)
+            act.triggered.connect(lambda _checked, pp=p: self.bookmark_selected.emit(pp))
+            self._bookmarks_menu.addAction(act)
+
+        self._bookmarks_menu.addSeparator()
+        manage = QAction("Remove Bookmark...", self)
+        manage.triggered.connect(self._prompt_remove_bookmark)
+        self._bookmarks_menu.addAction(manage)
+
+    def _prompt_remove_bookmark(self) -> None:
+        bookmarks = self._load_bookmarks()
+        if not bookmarks:
+            return
+        choice, ok = QInputDialog.getItem(
+            self, "Remove Bookmark", "Select a bookmark to remove:", bookmarks, 0, False
+        )
+        if ok and choice:
+            self._remove_bookmark(choice)
+
+    # --- Settings persistence ---
+
+    def _restore_settings(self) -> None:
+        geometry = self._settings.value("window/geometry")
+        if geometry is not None:
+            self.restoreGeometry(geometry)
+        state = self._settings.value("window/state")
+        if state is not None:
+            self.restoreState(state)
+        # Sound preference
+        sound_on = self._settings.value("view/sound", False, type=bool)
+        if sound_on:
+            self._toggle_sound_action.setChecked(True)
+            self.sound_toggled.emit(True)
+
+    def _save_settings(self) -> None:
+        self._settings.setValue("window/geometry", self.saveGeometry())
+        self._settings.setValue("window/state", self.saveState())
+        self._settings.setValue("view/sound", self._toggle_sound_action.isChecked())
+        self._settings.setValue("view/colorblind", self._colorblind_action.isChecked())
+        self._settings.setValue("last_path", str(self._root_path))
+
+    def closeEvent(self, event) -> None:
+        """Persist settings on close."""
+        self._save_settings()
+        super().closeEvent(event)
 
     # Public API
 
@@ -1544,6 +1988,8 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"pyfsn - {self._root_path}")
         if self._search_bar is not None:
             self._search_bar.clear()
+        if hasattr(self, "_breadcrumb") and self._breadcrumb is not None:
+            self._breadcrumb.set_path(path)
 
     def update_navigation_state(self, can_go_back: bool, can_go_forward: bool) -> None:
         """Update navigation button states.
@@ -1552,8 +1998,9 @@ class MainWindow(QMainWindow):
             can_go_back: Whether back navigation is available
             can_go_forward: Whether forward navigation is available
         """
-        # TODO: Enable/disable back/forward buttons when they are added to UI
-        pass
+        self._control_panel.set_navigation_state(can_go_back, can_go_forward)
+        self._back_action.setEnabled(can_go_back)
+        self._forward_action.setEnabled(can_go_forward)
 
     def resizeEvent(self, event) -> None:
         """Handle window resize - update overlay geometry."""
@@ -1564,6 +2011,8 @@ class MainWindow(QMainWindow):
             self._file_tooltip.setGeometry(0, 0, self._renderer.width(), self._renderer.height())
         if hasattr(self, '_file_age_legend') and self._file_age_legend and self._renderer:
             self._file_age_legend.setGeometry(0, 0, self._renderer.width(), self._renderer.height())
+        if hasattr(self, '_onboarding') and self._onboarding and self._renderer:
+            self._onboarding.setGeometry(0, 0, self._renderer.width(), self._renderer.height())
         if hasattr(self, '_mini_map') and self._mini_map and self._renderer:
             # Update mini map geometry
             self._mini_map.setGeometry(0, 0, self._renderer.width(), self._renderer.height())

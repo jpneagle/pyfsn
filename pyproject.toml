@@ -28,13 +28,17 @@ modern = [
 video = [
     "opencv-python>=4.8.0",
 ]
+# Safe deletion (move files to the OS trash from the context menu)
+trash = [
+    "Send2Trash>=1.8.0",
+]
 # Performance acceleration for PyOpenGL (can be added to base install)
 accelerate = [
     "PyOpenGL-accelerate>=3.1.0",
 ]
 # All extras
 all = [
-    "pyfsn[legacy,modern,video]",
+    "pyfsn[legacy,modern,video,trash]",
 ]
 
 [build-system]

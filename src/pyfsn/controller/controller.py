@@ -103,10 +103,22 @@ class Controller(QObject):
         # Sound effects (disabled by default)
         self._sound = SoundManager()
 
-        # Set default theme on renderer and listen for theme changes
+        # Set theme on renderer and listen for theme changes
         self._theme_manager = get_theme_manager()
+        self._theme_manager.load_preferences()
         self._renderer.set_theme(self._theme_manager.current_theme)
         self._theme_manager.theme_changed.connect(self._renderer.set_theme)
+        # Sync the theme menu to the loaded theme
+        self._window.set_active_theme(self._current_theme_key())
+
+        # Restore persisted view preferences (colorblind palette, sound)
+        from PyQt6.QtCore import QSettings
+        _settings = QSettings("pyfsn", "pyfsn")
+        if _settings.value("view/colorblind", False, type=bool):
+            self._renderer.set_colorblind_mode(True)
+            self._window.set_colorblind_checked(True)
+        if _settings.value("view/sound", False, type=bool):
+            self._sound.enabled = True
 
         # Text overlay update timer
         self._overlay_timer = QTimer()
@@ -146,6 +158,22 @@ class Controller(QObject):
 
         # Sound toggle
         self._window.sound_toggled.connect(lambda enabled: setattr(self._sound, 'enabled', enabled))
+
+        # Theme selection
+        self._window.theme_selected.connect(self._on_theme_selected)
+
+        # Colorblind palette toggle
+        self._window.colorblind_toggled.connect(self._on_colorblind_toggled)
+
+        # Bookmarks
+        self._window.bookmark_add_requested.connect(
+            lambda: self._window.add_bookmark(self._root_path)
+        )
+        self._window.bookmark_selected.connect(self._on_bookmark_selected)
+
+        # Mini map click-to-navigate
+        if self._window.mini_map is not None:
+            self._window.mini_map.map_clicked.connect(self._on_mini_map_clicked)
 
     def _connect_input_handler(self) -> None:
         """Connect input handler callbacks."""
@@ -237,6 +265,7 @@ class Controller(QObject):
 
     def _start_scan(self) -> None:
         """Start scanning the root directory."""
+        self._window.set_loading(True)
         self.scan_progress.emit(f"Scanning {self._root_path}...")
 
         # Create root node
@@ -304,6 +333,7 @@ class Controller(QObject):
         self._window.file_tree.load_tree(root)
 
         # Emit completion signal
+        self._window.set_loading(False)
         self.scan_complete.emit()
         self.scan_progress.emit(f"Loaded {len(self._nodes)} items from {self._root_path}")
 
@@ -313,6 +343,7 @@ class Controller(QObject):
         Args:
             error_message: Error message
         """
+        self._window.set_loading(False)
         self.scan_progress.emit(f"Error: {error_message}")
 
     # Layout
@@ -955,11 +986,18 @@ class Controller(QObject):
             menu.addAction("Copy Path", lambda: self._copy_path(node))
             menu.addAction("Reveal in Finder", lambda: self._reveal_in_finder(node))
             menu.addAction("Open Terminal Here", lambda: self._open_in_terminal(node))
+            menu.addAction("Bookmark", lambda: self._window.add_bookmark(node.path))
+            menu.addSeparator()
+            menu.addAction("Rename...", lambda: self._rename_node(node))
+            menu.addAction("Move to Trash", lambda: self._delete_node(node))
         else:
             menu.addAction("Open", lambda: self._open_file_safe(node))
             menu.addSeparator()
             menu.addAction("Copy Path", lambda: self._copy_path(node))
             menu.addAction("Reveal in Finder", lambda: self._reveal_in_finder(node))
+            menu.addSeparator()
+            menu.addAction("Rename...", lambda: self._rename_node(node))
+            menu.addAction("Move to Trash", lambda: self._delete_node(node))
 
         menu.exec(screen_pos)
 
@@ -1003,6 +1041,87 @@ class Controller(QObject):
             self.scan_progress.emit(f"Opened: {node.name}")
         except FileOpenError as e:
             self._show_file_open_error(node, e)
+
+    # File operations (rename / delete)
+
+    def _rename_node(self, node: Node) -> None:
+        """Rename a file or directory after prompting for a new name."""
+        from PyQt6.QtWidgets import QInputDialog
+
+        old_path = Path(node.path)
+        new_name, ok = QInputDialog.getText(
+            self._window, "Rename", "New name:", text=old_path.name
+        )
+        if not ok or not new_name or new_name == old_path.name:
+            return
+
+        new_path = old_path.with_name(new_name)
+        if new_path.exists():
+            QMessageBox.warning(
+                self._window, "Rename Failed", f"'{new_name}' already exists."
+            )
+            return
+        try:
+            old_path.rename(new_path)
+        except OSError as e:
+            QMessageBox.critical(self._window, "Rename Failed", str(e))
+            return
+
+        self.scan_progress.emit(f"Renamed to: {new_name}")
+        self.refresh()
+
+    def _delete_node(self, node: Node) -> None:
+        """Move a file or directory to the trash after confirmation."""
+        path = Path(node.path)
+        reply = QMessageBox.question(
+            self._window,
+            "Move to Trash",
+            f"Move '{path.name}' to the trash?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        if not self._move_to_trash(path):
+            return
+
+        self.scan_progress.emit(f"Moved to trash: {path.name}")
+        self.refresh()
+
+    def _move_to_trash(self, path: Path) -> bool:
+        """Move a path to the OS trash. Returns True on success."""
+        # Prefer send2trash if available (cross-platform, recoverable)
+        try:
+            from send2trash import send2trash
+
+            send2trash(str(path))
+            return True
+        except ImportError:
+            pass
+        except OSError as e:
+            QMessageBox.critical(self._window, "Delete Failed", str(e))
+            return False
+
+        # macOS native fallback via Finder
+        try:
+            if sys.platform == "darwin":
+                script = (
+                    'tell application "Finder" to move POSIX file '
+                    f'"{path}" to trash'
+                )
+                subprocess.run(["osascript", "-e", script], check=True)
+                return True
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            pass
+
+        QMessageBox.warning(
+            self._window,
+            "Trash Unavailable",
+            "Could not move to trash. Install 'send2trash' "
+            "(pip install Send2Trash) to enable safe deletion.",
+        )
+        return False
 
     # Public API
 
@@ -1115,4 +1234,59 @@ class Controller(QObject):
     def _emit_navigation_state(self) -> None:
         """Emit navigation state change signal."""
         self.navigation_state_changed.emit(self.can_go_back(), self.can_go_forward())
+
+    # Theme / colorblind / bookmarks / mini-map handlers
+
+    def _current_theme_key(self) -> str:
+        """Return the registry key for the currently active theme."""
+        from pyfsn.view.theme import BUILTIN_THEMES
+        current = self._theme_manager.current_theme
+        for key, theme in BUILTIN_THEMES.items():
+            if theme is current:
+                return key
+        return current.name.lower().replace(" ", "_")
+
+    def _on_theme_selected(self, key: str) -> None:
+        """Apply a theme chosen from the View > Theme menu and persist it."""
+        try:
+            self._theme_manager.set_theme(key)
+        except KeyError:
+            return
+        self._theme_manager.save_preferences()
+        self._window.set_active_theme(key)
+        self.scan_progress.emit(f"Theme: {self._theme_manager.theme_name}")
+
+    def _on_colorblind_toggled(self, enabled: bool) -> None:
+        """Toggle the colorblind-friendly age palette."""
+        self._renderer.set_colorblind_mode(enabled)
+        self._window.set_colorblind_checked(enabled)
+
+    def _on_bookmark_selected(self, path: Path) -> None:
+        """Navigate to a bookmarked directory."""
+        if path.exists():
+            self._change_directory(path)
+        else:
+            self.scan_progress.emit(f"Bookmark not found: {path}")
+
+    def _on_mini_map_clicked(self, world_x: float, world_z: float) -> None:
+        """Move the camera to look at the clicked mini-map location."""
+        import numpy as np
+
+        # Find the nearest node to the clicked world position (XZ plane)
+        nearest_node = None
+        nearest_dist = float("inf")
+        for path, position in self._positions.items():
+            cx, _cy, cz = position.center
+            dist = (cx - world_x) ** 2 + (cz - world_z) ** 2
+            if dist < nearest_dist:
+                nearest_dist = dist
+                nearest_node = self._nodes.get(path)
+
+        if nearest_node is not None and hasattr(self._renderer, "snap_camera_to_node"):
+            self._renderer.snap_camera_to_node(id(nearest_node))
+        else:
+            # Fall back to panning the orbit target to the clicked point
+            target = np.array([world_x, 0.0, world_z], dtype=np.float32)
+            self._camera._state.target = target
+            self._camera._update_orbit_from_position()
 

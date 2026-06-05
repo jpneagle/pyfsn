@@ -87,6 +87,9 @@ class Renderer(QOpenGLWidget):
         # Color mode (SGI fsn style: age-based or type-based)
         self._color_mode: ColorMode = ColorMode.AGE
 
+        # Colorblind-friendly age palette toggle
+        self._colorblind: bool = False
+
         # Colors for different node types
         self._colors = {
             "directory": np.array([0.2, 0.6, 1.0, 1.0], dtype=np.float32),  # Bright blue (platform)
@@ -139,6 +142,19 @@ class Renderer(QOpenGLWidget):
         now = time.time()
         age_days = (now - mtime) / 86400.0  # Seconds to days
 
+        if self._colorblind:
+            # Colorblind-friendly palette (blue->yellow luminance ramp, deuteranopia-safe)
+            if age_days < 1:
+                return np.array([0.27, 0.47, 0.71, 1.0], dtype=np.float32)  # Blue
+            elif age_days < 7:
+                return np.array([0.40, 0.76, 0.65, 1.0], dtype=np.float32)  # Teal
+            elif age_days < 30:
+                return np.array([0.93, 0.93, 0.42, 1.0], dtype=np.float32)  # Pale yellow
+            elif age_days < 365:
+                return np.array([0.96, 0.62, 0.30, 1.0], dtype=np.float32)  # Sand/orange
+            else:
+                return np.array([0.55, 0.34, 0.29, 1.0], dtype=np.float32)  # Muted brown
+
         if age_days < 1:           # Less than 24 hours
             return np.array([0.2, 1.0, 0.2, 1.0], dtype=np.float32)  # Bright green
         elif age_days < 7:         # Less than 1 week
@@ -149,6 +165,30 @@ class Renderer(QOpenGLWidget):
             return np.array([1.0, 0.5, 0.1, 1.0], dtype=np.float32)  # Orange
         else:                      # More than 1 year
             return np.array([0.7, 0.2, 0.1, 1.0], dtype=np.float32)  # Reddish Brown
+
+    def set_colorblind_mode(self, enabled: bool) -> None:
+        """Toggle the colorblind-friendly age palette and recolor cubes.
+
+        Args:
+            enabled: Whether to use the colorblind-friendly palette
+        """
+        if self._colorblind == enabled:
+            return
+        self._colorblind = enabled
+
+        # Recolor all non-selected file cubes that use age coloring
+        for path, idx in self._node_to_cube.items():
+            if path in self._selected_paths:
+                continue
+            node = self._nodes.get(path)
+            if node and node.type != NodeType.SYMLINK and self._color_mode == ColorMode.AGE:
+                self._cubes[idx].color = self._calculate_age_color(node.mtime)
+        self.update()
+
+    @property
+    def colorblind_mode(self) -> bool:
+        """Get whether the colorblind-friendly palette is active."""
+        return self._colorblind
 
     def set_theme(self, theme) -> None:
         """Set the current theme for theme-specific rendering."""

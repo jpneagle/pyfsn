@@ -8,7 +8,7 @@ import math
 from typing import TYPE_CHECKING
 
 import numpy as np
-from PyQt6.QtCore import Qt, QTimer, QPointF
+from PyQt6.QtCore import Qt, QTimer, QPointF, pyqtSignal
 from PyQt6.QtGui import QPainter, QColor, QPen, QBrush, QFont, QPolygonF
 from PyQt6.QtWidgets import QWidget
 
@@ -45,6 +45,9 @@ class MiniMap(QWidget):
     # Camera frustum color
     FRUSTUM_COLOR = QColor(255, 100, 50, 180)  # Orange semi-transparent
 
+    # Emitted when the user clicks inside the map; carries world (x, z)
+    map_clicked = pyqtSignal(float, float)
+
     def __init__(self, parent=None) -> None:
         """Initialize the mini map.
 
@@ -53,9 +56,9 @@ class MiniMap(QWidget):
         """
         super().__init__(parent)
 
-        # Make widget transparent for mouse events and background
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        # Translucent background; mouse events are handled for click-to-navigate
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
 
         # Scene data (will be updated by controller/renderer)
         self._positions: dict[str, object] = {}  # path -> Position object
@@ -455,3 +458,35 @@ class MiniMap(QWidget):
 
         norm_z = (z - bounds['min_z']) / (bounds['max_z'] - bounds['min_z'] + 1e-6)
         return draw_rect.bottom() - norm_z * draw_rect.height()
+
+    def _map_to_world(self, map_x: float, map_y: float) -> tuple[float, float]:
+        """Convert mini map widget coordinates back to world (x, z).
+
+        Inverse of :meth:`_world_to_map`.
+        """
+        bounds = self._scene_bounds
+        draw_rect = self._get_draw_rect()
+
+        norm_x = (map_x - draw_rect.left()) / (draw_rect.width() + 1e-6)
+        norm_z = (draw_rect.bottom() - map_y) / (draw_rect.height() + 1e-6)
+
+        world_x = bounds['min_x'] + norm_x * (bounds['max_x'] - bounds['min_x'])
+        world_z = bounds['min_z'] + norm_z * (bounds['max_z'] - bounds['min_z'])
+        return (world_x, world_z)
+
+    def mousePressEvent(self, event) -> None:
+        """Handle clicks: navigate camera to the clicked map location."""
+        if event.button() != Qt.MouseButton.LeftButton:
+            event.ignore()
+            return
+
+        pos = event.position()
+        draw_rect = self._get_draw_rect()
+        if not draw_rect.contains(pos):
+            # Click outside the radar area: let it pass through to the renderer
+            event.ignore()
+            return
+
+        world_x, world_z = self._map_to_world(pos.x(), pos.y())
+        self.map_clicked.emit(float(world_x), float(world_z))
+        event.accept()

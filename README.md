@@ -108,6 +108,26 @@ python -m pyfsn /path/to/directory
 python -m pyfsn ~
 ```
 
+### コマンドラインオプション
+
+| オプション | 説明 | デフォルト |
+|-----------|------|-----------|
+| `path` | 可視化するルートディレクトリ | 前回使用したディレクトリ（なければカレント） |
+| `--renderer {auto,modern,legacy}` | 使用するレンダラー | `auto` |
+| `--max-depth N` | 可視化する最大深度 | `5` |
+| `--lazy-depth N` | 遅延読み込みを開始する深度 | `2` |
+| `--show-hidden` | 隠しファイル・ディレクトリ（`.` 始まり）を表示 | 非表示 |
+| `--color-mode {type,age}` | キューブの色分けモード（種類別 / 年齢別） | `age` |
+| `--msaa {0,2,4,8}` | マルチサンプルアンチエイリアスのサンプル数 | `4` |
+| `--no-tooltips` | ホバー時のツールチップを無効化 | 有効 |
+| `--no-labels` | ノード名ラベルを無効化 | 有効 |
+| `--no-sound` | UI サウンドエフェクトを無効化 | 無効 |
+
+```bash
+# 例: 隠しファイルを含めて深度3まで、種類別の色分けで表示
+python -m pyfsn ~/projects --show-hidden --max-depth 3 --color-mode type
+```
+
 ### ユーザーインターフェース
 
 pyfsn ウィンドウは以下で構成されます:
@@ -587,6 +607,26 @@ python -m pyfsn /path/to/directory
 python -m pyfsn ~
 ```
 
+### Command Line Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `path` | Root directory to visualize | Last used directory (or current) |
+| `--renderer {auto,modern,legacy}` | Renderer to use | `auto` |
+| `--max-depth N` | Maximum depth to visualize | `5` |
+| `--lazy-depth N` | Depth at which lazy loading starts | `2` |
+| `--show-hidden` | Show hidden files and directories (starting with `.`) | Hidden |
+| `--color-mode {type,age}` | Cube color mode (by file type / by age) | `age` |
+| `--msaa {0,2,4,8}` | Multisample anti-aliasing samples | `4` |
+| `--no-tooltips` | Disable tooltips on hover | Enabled |
+| `--no-labels` | Disable node name labels | Enabled |
+| `--no-sound` | Disable UI sound effects | Disabled |
+
+```bash
+# Example: include hidden files, limit depth to 3, color by file type
+python -m pyfsn ~/projects --show-hidden --max-depth 3 --color-mode type
+```
+
 ### User Interface
 
 The pyfsn window consists of:
@@ -1057,6 +1097,26 @@ python -m pyfsn /path/to/directory
 
 # 可视化主目录
 python -m pyfsn ~
+```
+
+### 命令行选项
+
+| 选项 | 说明 | 默认值 |
+|------|------|--------|
+| `path` | 要可视化的根目录 | 上次使用的目录（否则为当前目录） |
+| `--renderer {auto,modern,legacy}` | 使用的渲染器 | `auto` |
+| `--max-depth N` | 可视化的最大深度 | `5` |
+| `--lazy-depth N` | 开始延迟加载的深度 | `2` |
+| `--show-hidden` | 显示隐藏文件和目录（以 `.` 开头） | 隐藏 |
+| `--color-mode {type,age}` | 立方体配色模式（按类型 / 按年龄） | `age` |
+| `--msaa {0,2,4,8}` | 多重采样抗锯齿采样数 | `4` |
+| `--no-tooltips` | 禁用悬停提示 | 启用 |
+| `--no-labels` | 禁用节点名称标签 | 启用 |
+| `--no-sound` | 禁用界面音效 | 禁用 |
+
+```bash
+# 示例：包含隐藏文件，深度限制为 3，按文件类型着色
+python -m pyfsn ~/projects --show-hidden --max-depth 3 --color-mode type
 ```
 
 ### 用户界面

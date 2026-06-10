@@ -27,7 +27,7 @@ from PyQt6.QtWidgets import (
     QInputDialog,
     QMessageBox,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QThread, QObject, QSettings
+from PyQt6.QtCore import Qt, pyqtSignal, QEvent, QTimer, QThread, QObject, QSettings
 from PyQt6.QtGui import (
     QAction,
     QActionGroup,
@@ -1404,6 +1404,11 @@ class MainWindow(QMainWindow):
         self._onboarding.hide()
         self._onboarding.raise_()
 
+        # Overlays are positioned from the renderer's size, which is only
+        # known once the layout assigns it (initial show, splitter drags).
+        # Track the renderer's own resize events to keep them in place.
+        self._renderer.installEventFilter(self)
+
         renderer_layout.addWidget(self._renderer)
         view_layout.addWidget(renderer_container)
 
@@ -2002,20 +2007,32 @@ class MainWindow(QMainWindow):
         self._back_action.setEnabled(can_go_back)
         self._forward_action.setEnabled(can_go_forward)
 
-    def resizeEvent(self, event) -> None:
-        """Handle window resize - update overlay geometry."""
-        super().resizeEvent(event)
-        if self._text_overlay and self._renderer:
-            self._text_overlay.setGeometry(0, 0, self._renderer.width(), self._renderer.height())
-        if hasattr(self, '_file_tooltip') and self._file_tooltip and self._renderer:
-            self._file_tooltip.setGeometry(0, 0, self._renderer.width(), self._renderer.height())
-        if hasattr(self, '_file_age_legend') and self._file_age_legend and self._renderer:
-            self._file_age_legend.setGeometry(0, 0, self._renderer.width(), self._renderer.height())
-        if hasattr(self, '_onboarding') and self._onboarding and self._renderer:
-            self._onboarding.setGeometry(0, 0, self._renderer.width(), self._renderer.height())
-        if hasattr(self, '_mini_map') and self._mini_map and self._renderer:
-            # Update mini map geometry
-            self._mini_map.setGeometry(0, 0, self._renderer.width(), self._renderer.height())
-            # Reposition mini map to bottom-right corner
-            self._mini_map.move(self._renderer.width() - self._mini_map.width() - 10,
-                               self._renderer.height() - self._mini_map.height() - 10)
+    def eventFilter(self, obj, event) -> bool:
+        """Reposition overlays whenever the renderer itself is resized."""
+        if obj is self._renderer and event.type() == QEvent.Type.Resize:
+            self._update_overlay_geometry()
+        return super().eventFilter(obj, event)
+
+    def _update_overlay_geometry(self) -> None:
+        """Fit overlay widgets to the renderer's current size."""
+        if not self._renderer:
+            return
+
+        width = self._renderer.width()
+        height = self._renderer.height()
+
+        full_size_overlays = (
+            self._text_overlay,
+            getattr(self, '_file_tooltip', None),
+            getattr(self, '_file_age_legend', None),
+            getattr(self, '_onboarding', None),
+        )
+        for overlay in full_size_overlays:
+            if overlay:
+                overlay.setGeometry(0, 0, width, height)
+
+        mini_map = getattr(self, '_mini_map', None)
+        if mini_map:
+            # Pin mini map to the bottom-right corner
+            mini_map.move(width - mini_map.width() - 10,
+                          height - mini_map.height() - 10)

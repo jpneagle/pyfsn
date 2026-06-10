@@ -8,7 +8,7 @@ import math
 from typing import TYPE_CHECKING
 
 import numpy as np
-from PyQt6.QtCore import Qt, QTimer, QPointF, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, QPointF, QRectF, pyqtSignal
 from PyQt6.QtGui import QPainter, QColor, QPen, QBrush, QFont, QPolygonF
 from PyQt6.QtWidgets import QWidget
 
@@ -391,13 +391,12 @@ class MiniMap(QWidget):
             text
         )
 
-    def _get_draw_rect(self) -> 'QtCore.QRectF':
+    def _get_draw_rect(self) -> QRectF:
         """Get the drawing rectangle (background area).
 
         Returns:
             QRectF of the drawable area
         """
-        from PyQt6.QtCore import QRectF
         return QRectF(
             self.MARGIN + 2,
             self.MARGIN + 2,

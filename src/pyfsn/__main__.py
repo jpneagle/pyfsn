@@ -182,14 +182,15 @@ def main() -> int:
     )
 
     # Create and start controller
-    controller = Controller(root_path)
+    controller = Controller(
+        root_path,
+        show_hidden=args.show_hidden,
+        lazy_depth=args.lazy_depth,
+    )
 
     # Apply CLI configuration
     controller._layout_config = layout_config
     controller._layout_engine = LayoutEngine(layout_config)
-
-    # Set scanner options
-    controller._scanner._lazy_depth = args.lazy_depth
 
     # Set color mode
     color_mode = ColorMode.TYPE if args.color_mode == "type" else ColorMode.AGE

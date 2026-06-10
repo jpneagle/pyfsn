@@ -4,10 +4,11 @@ Coordinates between the Model, View, and Layout layers, handling
 user input and managing application state.
 """
 
-from pathlib import Path
-from typing import Callable
+import os
 import subprocess
 import sys
+from pathlib import Path
+from typing import Callable
 
 from PyQt6.QtCore import QObject, pyqtSignal, QThread, QTimer, QPoint
 from PyQt6.QtGui import QAction
@@ -40,11 +41,18 @@ class Controller(QObject):
     scan_complete = pyqtSignal()  # Emits when scan is done
     navigation_state_changed = pyqtSignal(bool, bool)  # Emits (can_go_back, can_go_forward)
 
-    def __init__(self, root_path: Path) -> None:
+    def __init__(
+        self,
+        root_path: Path,
+        show_hidden: bool = False,
+        lazy_depth: int = 2,
+    ) -> None:
         """Initialize controller.
 
         Args:
             root_path: Root directory path to visualize
+            show_hidden: Whether to include hidden files and directories
+            lazy_depth: Depth at which the scanner starts lazy loading
         """
         super().__init__()
 
@@ -76,7 +84,7 @@ class Controller(QObject):
         self._layout_engine = LayoutEngine(self._layout_config)
 
         # Create scanner
-        self._scanner = Scanner()
+        self._scanner = Scanner(lazy_depth=lazy_depth, show_hidden=show_hidden)
         self._scan_worker: ScannerWorker | None = None
 
         # Scene data
@@ -242,21 +250,7 @@ class Controller(QObject):
             # Clear forward stack when navigating to new path
             self._forward_stack.clear()
 
-        self._root_path = path
-        self._window.set_root_path(path)
-
-        # Clear current scene
-        self._nodes.clear()
-        self._positions.clear()
-        self._selected_nodes.clear()
-        self._focused_node = None
-        
-        # Clear renderer selection (to remove spotlights)
-        if self._renderer:
-            self._renderer.clear_selection()
-
-        # Start new scan
-        self._start_scan()
+        self._navigate_to_path(path)
 
         # Update navigation state
         self._emit_navigation_state()
@@ -272,16 +266,14 @@ class Controller(QObject):
         self._root_node = Node.from_path(self._root_path)
         self._nodes[str(self._root_node.path)] = self._root_node
 
-        # Start async scan - ScannerWorker is already a QThread
-        self._scan_worker = ScannerWorker(self._root_path)
-
-        # Connect worker signals
-        self._scan_worker.progress.connect(self._on_scan_progress)
-        self._scan_worker.finished.connect(self._on_scan_complete)
-        self._scan_worker.error.connect(self._on_scan_error)
-
-        # Start the worker thread
-        self._scan_worker.start()
+        # Start async scan through the scanner so its options
+        # (lazy_depth, show_hidden) are applied
+        self._scan_worker = self._scanner.scan_async(
+            self._root_path,
+            on_progress=self._on_scan_progress,
+            on_finished=self._on_scan_complete,
+            on_error=self._on_scan_error,
+        )
 
     def _on_scan_progress(self, progress: ScanProgress) -> None:
         """Handle scan progress update.
@@ -317,13 +309,11 @@ class Controller(QObject):
         # Calculate layout
         self._calculate_layout()
 
-        # Load into renderer
-        self._load_scene()
-
-        # Position camera to view the scene
+        # Position camera to view the scene before loading it, so the
+        # renderer picks up the final camera state
         self._reset_camera_to_scene()
 
-        # Load into renderer (this also updates camera in renderer)
+        # Load into renderer
         self._load_scene()
 
         # Update input handler with scene data
@@ -331,6 +321,11 @@ class Controller(QObject):
 
         # Load file tree
         self._window.file_tree.load_tree(root)
+
+        # Re-apply active filters to the freshly scanned nodes so the
+        # filter panel state stays in sync after navigation/refresh
+        if self._active_filters:
+            self._apply_filters(self._active_filters)
 
         # Emit completion signal
         self._window.set_loading(False)
@@ -779,7 +774,9 @@ class Controller(QObject):
             if sys.platform == "darwin":  # macOS
                 subprocess.run(["open", str(file_path)], check=True)
             elif sys.platform == "win32":  # Windows
-                subprocess.run(["start", "", str(file_path)], shell=True, check=True)
+                # os.startfile avoids the shell, so special characters in
+                # file names are never interpreted as commands
+                os.startfile(str(file_path))
             else:  # Linux and other Unix-like systems
                 subprocess.run(["xdg-open", str(file_path)], check=True)
         except subprocess.CalledProcessError as e:
@@ -1028,7 +1025,13 @@ class Controller(QObject):
             if sys.platform == "darwin":
                 subprocess.run(["open", "-a", "Terminal", path], check=True)
             elif sys.platform == "win32":
-                subprocess.Popen(["cmd", "/K", f"cd /d {path}"])
+                # Set the working directory via cwd instead of a "cd" command
+                # string, which breaks on spaces and shell metacharacters
+                subprocess.Popen(
+                    ["cmd"],
+                    cwd=path,
+                    creationflags=subprocess.CREATE_NEW_CONSOLE,
+                )
             else:
                 subprocess.Popen(["x-terminal-emulator", "--working-directory", path])
         except (subprocess.CalledProcessError, FileNotFoundError):
@@ -1106,9 +1109,12 @@ class Controller(QObject):
         # macOS native fallback via Finder
         try:
             if sys.platform == "darwin":
+                # Escape backslashes and quotes so the path cannot break
+                # out of the AppleScript string literal
+                escaped = str(path).replace("\\", "\\\\").replace('"', '\\"')
                 script = (
                     'tell application "Finder" to move POSIX file '
-                    f'"{path}" to trash'
+                    f'"{escaped}" to trash'
                 )
                 subprocess.run(["osascript", "-e", script], check=True)
                 return True
@@ -1222,11 +1228,23 @@ class Controller(QObject):
         self._root_path = path
         self._window.set_root_path(path)
 
-        # Clear current scene
+        # Clear current scene state. The filtered node set and search
+        # results reference nodes from the old scene, so they must be
+        # dropped as well (active filter criteria are kept and re-applied
+        # once the new scan completes).
         self._nodes.clear()
         self._positions.clear()
         self._selected_nodes.clear()
         self._focused_node = None
+        self._filtered_nodes.clear()
+        self._search_results.clear()
+        self._current_search_index = 0
+
+        # Clear renderer selection and search spotlights
+        if self._renderer:
+            self._renderer.clear_selection()
+            if hasattr(self._renderer, 'clear_spotlight_search'):
+                self._renderer.clear_spotlight_search()
 
         # Start new scan
         self._start_scan()

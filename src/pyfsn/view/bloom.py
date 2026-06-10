@@ -99,6 +99,7 @@ class BloomEffect:
         """Check if bloom effect is enabled."""
         return self._enabled
 
+    @enabled.setter
     def enabled(self, value: bool) -> None:
         """Enable or disable bloom effect.
 

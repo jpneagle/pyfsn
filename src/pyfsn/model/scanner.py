@@ -11,13 +11,14 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from pyfsn.model.node import Node, NodeType
 
 
-def _get_sorted_entries(path: Path) -> list[str]:
+def _get_sorted_entries(path: Path, show_hidden: bool = False) -> list[str]:
     """Get directory entries sorted by type and name.
 
     Directories come first, then files, both sorted alphabetically.
 
     Args:
         path: Directory path to read
+        show_hidden: Whether to include hidden entries (starting with '.')
 
     Returns:
         Sorted list of entry names
@@ -32,7 +33,7 @@ def _get_sorted_entries(path: Path) -> list[str]:
 
     for entry in entries:
         name = entry.name
-        if name.startswith("."):
+        if not show_hidden and name.startswith("."):
             continue
 
         if entry.is_dir():
@@ -71,9 +72,10 @@ class ScannerWorker(QThread):
     """Worker thread for scanning directories asynchronously."""
 
     # Signals
+    # Note: named scan_finished to avoid shadowing QThread.finished
     progress = pyqtSignal(object)  # Emits ScanProgress
     node_found = pyqtSignal(Node)  # Emits newly discovered nodes
-    finished = pyqtSignal(Node)  # Emits root node when complete
+    scan_finished = pyqtSignal(Node)  # Emits root node when complete
     error = pyqtSignal(str)  # Emits error messages
 
     def __init__(
@@ -82,6 +84,7 @@ class ScannerWorker(QThread):
         lazy_load: bool = True,
         lazy_depth: int = 2,
         max_workers: int = 4,
+        show_hidden: bool = False,
     ) -> None:
         """Initialize the scanner worker.
 
@@ -90,12 +93,14 @@ class ScannerWorker(QThread):
             lazy_load: Whether to use lazy loading for deep hierarchies
             lazy_depth: Depth at which to start lazy loading
             max_workers: Maximum number of threads for parallel scanning
+            show_hidden: Whether to include hidden files and directories
         """
         super().__init__()
         self.root_path = root_path
         self.lazy_load = lazy_load
         self.lazy_depth = lazy_depth
         self.max_workers = max_workers
+        self.show_hidden = show_hidden
         self._is_running = True
 
     def stop(self) -> None:
@@ -106,7 +111,7 @@ class ScannerWorker(QThread):
         """Run the scan operation."""
         try:
             root_node = self._scan_node(self.root_path, depth=0)
-            self.finished.emit(root_node)
+            self.scan_finished.emit(root_node)
         except Exception as e:
             self.error.emit(f"Scan failed: {e}")
         finally:
@@ -178,21 +183,28 @@ class ScannerWorker(QThread):
             self.error.emit(f"Error reading {node.path}: {e}")
 
     def _get_sorted_entries(self, path: Path) -> list[str]:
-        return _get_sorted_entries(path)
+        return _get_sorted_entries(path, self.show_hidden)
 
 
 class Scanner:
     """High-level scanner interface."""
 
-    def __init__(self, lazy_load: bool = True, lazy_depth: int = 2) -> None:
+    def __init__(
+        self,
+        lazy_load: bool = True,
+        lazy_depth: int = 2,
+        show_hidden: bool = False,
+    ) -> None:
         """Initialize the scanner.
 
         Args:
             lazy_load: Whether to use lazy loading for deep hierarchies
             lazy_depth: Depth at which to start lazy loading
+            show_hidden: Whether to include hidden files and directories
         """
         self.lazy_load = lazy_load
         self.lazy_depth = lazy_depth
+        self.show_hidden = show_hidden
         self._worker: ScannerWorker | None = None
         self._executor = ThreadPoolExecutor(max_workers=4)
 
@@ -234,7 +246,10 @@ class Scanner:
             The scanner worker thread
         """
         self._worker = ScannerWorker(
-            path, lazy_load=self.lazy_load, lazy_depth=self.lazy_depth
+            path,
+            lazy_load=self.lazy_load,
+            lazy_depth=self.lazy_depth,
+            show_hidden=self.show_hidden,
         )
 
         if on_progress is not None:
@@ -242,7 +257,7 @@ class Scanner:
         if on_node_found is not None:
             self._worker.node_found.connect(on_node_found)
         if on_finished is not None:
-            self._worker.finished.connect(on_finished)
+            self._worker.scan_finished.connect(on_finished)
         if on_error is not None:
             self._worker.error.connect(on_error)
 
@@ -297,7 +312,7 @@ class Scanner:
             pass
 
     def _get_sorted_entries(self, path: Path) -> list[str]:
-        return _get_sorted_entries(path)
+        return _get_sorted_entries(path, self.show_hidden)
 
     def __del__(self) -> None:
         """Cleanup on deletion."""

@@ -314,6 +314,153 @@ class FileAgeLegend(QWidget):
             painter.drawText(x + 38, y_pos + 11, label)
 
 
+class FileTypeLegend(QWidget):
+    """Legend overlay showing file type color coding (bottom-left corner)."""
+
+    CATEGORY_LABELS = {
+        "image": "Image",
+        "video": "Video",
+        "audio": "Audio",
+        "document": "Document",
+        "code": "Code",
+        "archive": "Archive",
+        "data": "Data",
+        "other": "Other",
+    }
+
+    def __init__(self, parent=None) -> None:
+        """Initialize file type legend.
+
+        Args:
+            parent: Parent widget (should be the Renderer).
+        """
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self._entries: list[tuple[QColor, str]] = []
+
+    def set_categories(self, categories: dict[str, tuple[float, float, float, float]]) -> None:
+        """Set the category color map to display.
+
+        Args:
+            categories: Mapping from category key to RGBA tuple.
+        """
+        self._entries = [
+            (QColor(int(r * 255), int(g * 255), int(b * 255)), self.CATEGORY_LABELS.get(key, key))
+            for key, (r, g, b, _a) in categories.items()
+        ]
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        """Paint the legend."""
+        if not self._entries:
+            return
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # Position at bottom-left with margin (stacked above the age legend)
+        margin = 10
+        x = margin
+        row_height = 17
+        header_height = 30
+        item_count = len(self._entries)
+        legend_height = header_height + item_count * row_height + 10
+        y = self.height() - legend_height - margin
+
+        # Dark semi-transparent background with rounded corners
+        painter.setBrush(QColor(30, 40, 30, 200))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawRoundedRect(x, y, 140, legend_height, 8, 8)
+
+        # Title
+        font = QFont("Arial", 11, QFont.Weight.Bold)
+        painter.setFont(font)
+        painter.setPen(QColor(255, 255, 255))
+        painter.drawText(x + 12, y + 22, "File Type")
+
+        # Legend entries
+        font = QFont("Arial", 10)
+        painter.setFont(font)
+
+        for i, (color, label) in enumerate(self._entries):
+            y_pos = y + header_height + i * row_height
+            painter.setBrush(color)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawRoundedRect(x + 12, y_pos, 20, 14, 2, 2)
+            painter.setPen(QColor(255, 255, 255))
+            painter.drawText(x + 38, y_pos + 11, label)
+
+
+class ToastOverlay(QWidget):
+    """Lightweight toast notification overlay.
+
+    Displays a short message at the bottom-center of the renderer for a
+    few seconds, then auto-hides.
+    """
+
+    def __init__(self, parent=None) -> None:
+        """Initialize toast overlay.
+
+        Args:
+            parent: Parent widget (should be the Renderer).
+        """
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setVisible(False)
+
+        self._message = ""
+        self._hide_timer = QTimer()
+        self._hide_timer.setSingleShot(True)
+        self._hide_timer.timeout.connect(self.hide)
+
+    def show_message(self, message: str, duration_ms: int = 2000) -> None:
+        """Show a toast message.
+
+        Args:
+            message: Message text to display.
+            duration_ms: How long to show the toast in milliseconds.
+        """
+        self._message = message
+        self.setVisible(True)
+        self.raise_()
+        self.update()
+        self._hide_timer.start(duration_ms)
+
+    def paintEvent(self, event) -> None:
+        """Paint the toast."""
+        if not self._message:
+            return
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        font = QFont("Arial", 11, QFont.Weight.Bold)
+        painter.setFont(font)
+        metrics = painter.fontMetrics()
+        text_width = metrics.horizontalAdvance(self._message)
+        text_height = metrics.height()
+        padding = 12
+        radius = 6
+
+        box_width = text_width + padding * 2
+        box_height = text_height + padding
+        x = (self.width() - box_width) // 2
+        y = self.height() - box_height - 40
+
+        painter.setBrush(QColor(20, 25, 35, 220))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawRoundedRect(x, y, box_width, box_height, radius, radius)
+
+        painter.setPen(QColor(255, 255, 255))
+        painter.drawText(
+            x + padding,
+            y + padding // 2 + metrics.ascent(),
+            self._message,
+        )
+
+
 class FileTooltipOverlay(QWidget):
     """Tooltip overlay for displaying file information on hover (SGI fsn style).
 
@@ -355,14 +502,8 @@ class FileTooltipOverlay(QWidget):
 
     def _format_size(self, size: int) -> str:
         """Format file size for display."""
-        if size < 1024:
-            return f"{size} B"
-        elif size < 1024 * 1024:
-            return f"{size / 1024:.1f} KB"
-        elif size < 1024 * 1024 * 1024:
-            return f"{size / (1024 * 1024):.1f} MB"
-        else:
-            return f"{size / (1024 * 1024 * 1024):.1f} GB"
+        from pyfsn.model.node import Node
+        return Node.format_size(size)
 
     def _format_permissions(self, permissions: int) -> str:
         """Format permissions as rwxrwxrwx string."""
@@ -982,21 +1123,53 @@ class ControlPanel(QWidget):
         )
 
 
-class SearchBar(QLineEdit):
-    """Search bar for finding nodes by name."""
+class SearchBar(QWidget):
+    """Search bar widget with navigation buttons and hit count display."""
 
     search_requested = pyqtSignal(str)
+    next_result_requested = pyqtSignal()
+    previous_result_requested = pyqtSignal()
 
     def __init__(self, parent=None) -> None:
         """Initialize search bar."""
         super().__init__(parent)
-        self.setPlaceholderText("Search files and folders...")
-        self.setClearButtonEnabled(True)
-        self.textChanged.connect(self._on_text_changed)
+        self._setup_ui()
+
+    def _setup_ui(self) -> None:
+        """Set up the search bar UI."""
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        self._line_edit = QLineEdit()
+        self._line_edit.setPlaceholderText("Search files and folders...")
+        self._line_edit.setClearButtonEnabled(True)
+        self._line_edit.textChanged.connect(self._on_text_changed)
+        self._line_edit.keyPressEvent = self._line_edit_keyPressEvent
+        layout.addWidget(self._line_edit, stretch=1)
+
+        self._prev_btn = QPushButton("◀")
+        self._prev_btn.setFixedWidth(28)
+        self._prev_btn.setToolTip("Previous result (Shift+Enter)")
+        self._prev_btn.setEnabled(False)
+        self._prev_btn.clicked.connect(self.previous_result_requested.emit)
+        layout.addWidget(self._prev_btn)
+
+        self._next_btn = QPushButton("▶")
+        self._next_btn.setFixedWidth(28)
+        self._next_btn.setToolTip("Next result (Enter)")
+        self._next_btn.setEnabled(False)
+        self._next_btn.clicked.connect(self.next_result_requested.emit)
+        layout.addWidget(self._next_btn)
+
+        self._count_label = QLabel("")
+        self._count_label.setStyleSheet("color: #aaaaaa; font-size: 11px; padding-right: 4px;")
+        self._count_label.setMinimumWidth(50)
+        self._count_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        layout.addWidget(self._count_label)
 
     def _on_text_changed(self, text: str) -> None:
         """Handle text change - emit search signal with debounce."""
-        # Using a simple debounce timer
         if hasattr(self, '_debounce_timer'):
             self._debounce_timer.stop()
 
@@ -1005,18 +1178,80 @@ class SearchBar(QLineEdit):
         self._debounce_timer.timeout.connect(lambda: self.search_requested.emit(text))
         self._debounce_timer.start(300)  # 300ms debounce
 
-    def keyPressEvent(self, event: QKeyEvent) -> None:
-        """Handle key press events."""
+    def _line_edit_keyPressEvent(self, event: QKeyEvent) -> None:
+        """Handle key press events in the line edit."""
         key = event.key()
-        if key == Qt.Key.Key_Escape or key == Qt.Key.Key_Down:
-            self.clearFocus()
-            # Return focus to renderer if possible
+        modifiers = event.modifiers()
+
+        if key == Qt.Key.Key_Escape:
+            self._line_edit.clearFocus()
             window = self.window()
-            if hasattr(window, 'renderer'):
+            if window is not None and hasattr(window, 'renderer'):
                 window.renderer.setFocus()
             return
 
-        super().keyPressEvent(event)
+        if key == Qt.Key.Key_Return or key == Qt.Key.Key_Enter:
+            if modifiers & Qt.KeyboardModifier.ShiftModifier:
+                self.previous_result_requested.emit()
+            else:
+                self.next_result_requested.emit()
+            return
+
+        if key == Qt.Key.Key_Down:
+            self.next_result_requested.emit()
+            return
+
+        if key == Qt.Key.Key_Up:
+            self.previous_result_requested.emit()
+            return
+
+        QLineEdit.keyPressEvent(self._line_edit, event)
+
+    def set_result_count(self, current: int, total: int) -> None:
+        """Update the result count label.
+
+        Args:
+            current: Current result index (1-based) or 0 if none.
+            total: Total number of results.
+        """
+        if total == 0:
+            self._count_label.setText("")
+        else:
+            self._count_label.setText(f"{current} / {total}")
+        self._prev_btn.setEnabled(total > 0)
+        self._next_btn.setEnabled(total > 0)
+
+    def text(self) -> str:
+        """Return current search text."""
+        return self._line_edit.text()
+
+    def setText(self, text: str) -> None:
+        """Set search text."""
+        self._line_edit.setText(text)
+
+    def clear(self) -> None:
+        """Clear search text."""
+        self._line_edit.clear()
+
+    def setFocus(self) -> None:
+        """Set focus to the line edit."""
+        self._line_edit.setFocus()
+
+    def selectAll(self) -> None:
+        """Select all text in the line edit."""
+        self._line_edit.selectAll()
+
+    def hasFocus(self) -> bool:
+        """Return whether the line edit has focus."""
+        return self._line_edit.hasFocus()
+
+    def setPlaceholderText(self, text: str) -> None:
+        """Set placeholder text of the line edit."""
+        self._line_edit.setPlaceholderText(text)
+
+    def setStyleSheet(self, style: str) -> None:
+        """Set stylesheet for the line edit."""
+        self._line_edit.setStyleSheet(style)
 
 
 class FileTreeWidget(QTreeWidget):
@@ -1024,6 +1259,8 @@ class FileTreeWidget(QTreeWidget):
 
     node_selected = pyqtSignal(object)
     node_double_clicked = pyqtSignal(object)
+    selection_changed = pyqtSignal(set)  # Set[Node]
+    context_menu_requested = pyqtSignal(object, object)  # Node | None, QPoint
 
     # Role for storing node reference in item data
     NODE_ROLE = Qt.ItemDataRole.UserRole
@@ -1031,20 +1268,30 @@ class FileTreeWidget(QTreeWidget):
     def __init__(self, parent=None) -> None:
         """Initialize file tree widget."""
         super().__init__(parent)
-        self.setHeaderLabels(["Name", "Size", "Type"])
+        self.setHeaderLabels(["Name", "Size", "Type", "Modified"])
         self.setAlternatingRowColors(True)
         self.setSortingEnabled(True)
+        self.setSelectionMode(QTreeWidget.SelectionMode.ExtendedSelection)
         self.setColumnWidth(0, 200)
         self.setColumnWidth(1, 80)
         self.setColumnWidth(2, 80)
+        self.setColumnWidth(3, 130)
 
         # Connect selection signal
         self.itemClicked.connect(self._on_item_clicked)
         # Connect double-click signal
         self.itemDoubleClicked.connect(self._on_item_double_clicked)
+        # Connect multi-selection change signal
+        self.itemSelectionChanged.connect(self._on_selection_changed)
+        # Connect context menu signal
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._on_context_menu)
 
         # Map path strings to tree items for quick lookup
         self._path_to_item: dict[str, QTreeWidgetItem] = {}
+
+        # Guard against selection feedback loops
+        self._block_selection_signal = False
 
     def load_tree(self, root_node) -> None:
         """Load tree from root node.
@@ -1084,19 +1331,14 @@ class FileTreeWidget(QTreeWidget):
         Returns:
             QTreeWidgetItem
         """
-        from pyfsn.model.node import NodeType
+        from datetime import datetime
+        from pyfsn.model.node import Node, NodeType
 
         # Format size
         if node.is_directory:
             size_str = ""
         else:
-            size = node.size
-            if size < 1024:
-                size_str = f"{size} B"
-            elif size < 1024 * 1024:
-                size_str = f"{size / 1024:.1f} KB"
-            else:
-                size_str = f"{size / (1024 * 1024):.1f} MB"
+            size_str = Node.format_size(node.size)
 
         # Determine type string
         if node.type == NodeType.DIRECTORY:
@@ -1111,9 +1353,17 @@ class FileTreeWidget(QTreeWidget):
             else:
                 type_str = "File"
 
-        item = QTreeWidgetItem([node.name, size_str, type_str])
+        # Format modification time
+        mtime_str = ""
+        if node.mtime:
+            mtime_str = datetime.fromtimestamp(node.mtime).strftime("%Y-%m-%d %H:%M")
+
+        item = QTreeWidgetItem([node.name, size_str, type_str, mtime_str])
         # Store node reference in item data
         item.setData(0, self.NODE_ROLE, node)
+
+        # Align size column to the right for easier reading
+        item.setTextAlignment(1, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
         # Map path to item for quick lookup
         self._path_to_item[str(node.path)] = item
@@ -1142,6 +1392,31 @@ class FileTreeWidget(QTreeWidget):
         if node:
             self.node_double_clicked.emit(node)
 
+    def _on_selection_changed(self) -> None:
+        """Emit the set of selected nodes when tree selection changes."""
+        if self._block_selection_signal:
+            return
+
+        selected_nodes = set()
+        for item in self.selectedItems():
+            node = item.data(0, self.NODE_ROLE)
+            if node is not None:
+                selected_nodes.add(node)
+        self.selection_changed.emit(selected_nodes)
+
+    def _on_context_menu(self, pos) -> None:
+        """Handle right-click context menu request.
+
+        Args:
+            pos: Widget-local position of the click.
+        """
+        item = self.itemAt(pos)
+        node = item.data(0, self.NODE_ROLE) if item else None
+        # If clicked on empty area but some items are selected, use the first selected node
+        if node is None and self.selectedItems():
+            node = self.selectedItems()[0].data(0, self.NODE_ROLE)
+        self.context_menu_requested.emit(node, self.mapToGlobal(pos))
+
     def select_node(self, node) -> None:
         """Select and show a node in the tree.
 
@@ -1159,6 +1434,24 @@ class FileTreeWidget(QTreeWidget):
             parent = item.parent()
             if parent:
                 parent.setExpanded(True)
+
+    def set_selected_nodes(self, nodes: set) -> None:
+        """Set the tree selection to the given nodes without emitting signals.
+
+        Args:
+            nodes: Set of Node objects to select.
+        """
+        self._block_selection_signal = True
+        self.clearSelection()
+        for node in nodes:
+            item = self._path_to_item.get(str(node.path))
+            if item is not None:
+                item.setSelected(True)
+                self.scrollToItem(item)
+                parent = item.parent()
+                if parent:
+                    parent.setExpanded(True)
+        self._block_selection_signal = False
 
 
 class BreadcrumbBar(QWidget):
@@ -1295,6 +1588,8 @@ class MainWindow(QMainWindow):
     # Signals
     directory_changed = pyqtSignal(Path)
     search_requested = pyqtSignal(str)
+    next_search_result_requested = pyqtSignal()
+    previous_search_result_requested = pyqtSignal()
     refresh_requested = pyqtSignal()
     go_back_requested = pyqtSignal()
     go_forward_requested = pyqtSignal()
@@ -1305,6 +1600,12 @@ class MainWindow(QMainWindow):
     colorblind_toggled = pyqtSignal(bool)
     bookmark_add_requested = pyqtSignal()
     bookmark_selected = pyqtSignal(Path)
+    show_hidden_toggled = pyqtSignal(bool)
+    color_mode_selected = pyqtSignal(str)
+    mini_map_toggled = pyqtSignal(bool)
+    recent_dir_selected = pyqtSignal(Path)
+    tree_selection_changed = pyqtSignal(set)
+    tree_context_menu_requested = pyqtSignal(object, object)
 
     def __init__(self, root_path: Path) -> None:
         """Initialize main window.
@@ -1391,6 +1692,17 @@ class MainWindow(QMainWindow):
         self._file_age_legend.setGeometry(0, 0, self._renderer.width(), self._renderer.height())
         self._file_age_legend.raise_()
 
+        # File type legend overlay (bottom-left, stacked above age legend)
+        self._file_type_legend = FileTypeLegend(self._renderer)
+        self._file_type_legend.setGeometry(0, 0, self._renderer.width(), self._renderer.height())
+        self._file_type_legend.setVisible(False)
+        self._file_type_legend.raise_()
+
+        # Toast notification overlay (bottom-center)
+        self._toast_overlay = ToastOverlay(self._renderer)
+        self._toast_overlay.setGeometry(0, 0, self._renderer.width(), self._renderer.height())
+        self._toast_overlay.raise_()
+
         # Mini map overlay (bottom-right)
         self._mini_map = MiniMap(self._renderer)
         self._mini_map.move(self._renderer.width() - self._mini_map.width() - 10,
@@ -1452,7 +1764,24 @@ class MainWindow(QMainWindow):
         self._progress_bar.setTextVisible(False)
         self._progress_bar.hide()
         self._status_bar.addPermanentWidget(self._progress_bar)
-        
+
+        # Label for selected node path (shown when a node is selected)
+        self._selected_path_label = QLabel("")
+        self._selected_path_label.setStyleSheet("color: #cccccc; padding-left: 8px;")
+        self._selected_path_label.setMinimumWidth(100)
+        self._selected_path_label.setMaximumWidth(600)
+        self._selected_path_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self._status_bar.addWidget(self._selected_path_label)
+
+        # Label for active filter summary
+        self._filter_status_label = QLabel("")
+        self._filter_status_label.setStyleSheet("color: #aaddff; padding-left: 8px;")
+        self._filter_status_label.setMinimumWidth(50)
+        self._filter_status_label.setMaximumWidth(400)
+        self._status_bar.addWidget(self._filter_status_label)
+
         # Default focus to search bar (Orbit Mode)
         self._search_bar.setFocus()
 
@@ -1519,6 +1848,36 @@ class MainWindow(QMainWindow):
         self._toggle_labels_action.setShortcut("Ctrl+L")
         self._toggle_labels_action.triggered.connect(self._toggle_labels)
         view_menu.addAction(self._toggle_labels_action)
+
+        self._toggle_mini_map_action = QAction("Show &Mini Map", self)
+        self._toggle_mini_map_action.setCheckable(True)
+        self._toggle_mini_map_action.setChecked(True)
+        self._toggle_mini_map_action.triggered.connect(self._toggle_mini_map)
+        view_menu.addAction(self._toggle_mini_map_action)
+
+        self._show_hidden_action = QAction("Show &Hidden Files", self)
+        self._show_hidden_action.setCheckable(True)
+        self._show_hidden_action.setChecked(False)
+        self._show_hidden_action.setShortcut("Ctrl+H")
+        self._show_hidden_action.triggered.connect(
+            lambda checked: self.show_hidden_toggled.emit(checked)
+        )
+        view_menu.addAction(self._show_hidden_action)
+
+        view_menu.addSeparator()
+
+        # Color mode submenu
+        color_mode_menu = view_menu.addMenu("&Color Mode")
+        self._color_mode_group = QActionGroup(self)
+        self._color_mode_group.setExclusive(True)
+        self._color_mode_actions: dict[str, QAction] = {}
+        for key, label in (("age", "&Age"), ("type", "&Type")):
+            act = QAction(label, self)
+            act.setCheckable(True)
+            act.triggered.connect(lambda _checked, k=key: self.color_mode_selected.emit(k))
+            self._color_mode_group.addAction(act)
+            color_mode_menu.addAction(act)
+            self._color_mode_actions[key] = act
 
         view_menu.addSeparator()
 
@@ -1593,8 +1952,17 @@ class MainWindow(QMainWindow):
         self._bookmarks_menu.addSeparator()
         self._rebuild_bookmarks_menu()
 
+        # Recent Directories menu
+        self._recent_dirs_menu = menubar.addMenu("&Recent")
+        self._rebuild_recent_dirs_menu()
+
         # Help menu
         help_menu = menubar.addMenu("&Help")
+
+        shortcuts_action = QAction("&Keyboard Shortcuts", self)
+        shortcuts_action.setShortcut("F1")
+        shortcuts_action.triggered.connect(self._show_shortcuts_dialog)
+        help_menu.addAction(shortcuts_action)
 
         about_action = QAction("&About", self)
         about_action.triggered.connect(self._show_about)
@@ -1613,12 +1981,22 @@ class MainWindow(QMainWindow):
         self._control_panel.labels_toggled.connect(self._toggle_labels)
         self._control_panel.fly_mode_toggled.connect(self._on_fly_mode_toggled)
 
-        # Search bar signal
+        # Search bar signals
         self._search_bar.search_requested.connect(self.search_requested.emit)
+        self._search_bar.next_result_requested.connect(
+            self.next_search_result_requested.emit
+        )
+        self._search_bar.previous_result_requested.connect(
+            self.previous_search_result_requested.emit
+        )
 
         # File tree signals
         self._file_tree.node_selected.connect(self._on_tree_node_selected)
         self._file_tree.node_double_clicked.connect(self._on_tree_node_double_clicked)
+        self._file_tree.selection_changed.connect(self.tree_selection_changed.emit)
+        self._file_tree.context_menu_requested.connect(
+            self.tree_context_menu_requested.emit
+        )
 
         # Filter panel signal
         self._filter_panel.filter_changed.connect(self.filter_changed.emit)
@@ -1672,7 +2050,48 @@ class MainWindow(QMainWindow):
             self._text_overlay.clear()
         self._toggle_labels_action.setChecked(self._show_labels)
         self._control_panel._show_labels_btn.setChecked(self._show_labels)
-    
+
+    def _toggle_mini_map(self, enabled: bool | None = None) -> None:
+        """Toggle mini map visibility.
+
+        Args:
+            enabled: Desired visibility. If None, toggle current state.
+        """
+        if enabled is None:
+            enabled = not self._mini_map.isVisible()
+        self._mini_map.setVisible(enabled)
+        self._toggle_mini_map_action.setChecked(enabled)
+
+    def set_show_hidden_checked(self, enabled: bool) -> None:
+        """Sync the Show Hidden Files menu check state."""
+        self._show_hidden_action.setChecked(enabled)
+
+    def set_color_mode_checked(self, mode: str) -> None:
+        """Sync the Color Mode menu check state."""
+        act = self._color_mode_actions.get(mode)
+        if act is not None:
+            act.setChecked(True)
+
+    def set_color_mode_legend(self, mode: str, type_colors: dict[str, tuple[float, float, float, float]] | None = None) -> None:
+        """Show the appropriate legend for the active color mode.
+
+        Args:
+            mode: 'age' or 'type'.
+            type_colors: Optional category-to-color mapping for type mode.
+        """
+        if hasattr(self, '_file_age_legend'):
+            self._file_age_legend.setVisible(mode == "age")
+        if hasattr(self, '_file_type_legend'):
+            if mode == "type" and type_colors:
+                self._file_type_legend.set_categories(type_colors)
+                self._file_type_legend.setVisible(True)
+            else:
+                self._file_type_legend.setVisible(False)
+
+    def set_mini_map_visible(self, visible: bool) -> None:
+        """Show or hide the mini map and sync the menu state."""
+        self._toggle_mini_map(visible)
+
     def _on_fly_mode_toggled(self, enabled: bool) -> None:
         """Handle fly mode toggle.
         
@@ -1866,8 +2285,10 @@ class MainWindow(QMainWindow):
             bookmarks.append(path_str)
             self._settings.setValue("bookmarks", bookmarks)
             self._rebuild_bookmarks_menu()
+            self.show_toast(f"Bookmarked: {path_str}")
             self.set_status_message(f"Bookmarked: {path_str}")
         else:
+            self.show_toast(f"Already bookmarked: {path_str}")
             self.set_status_message(f"Already bookmarked: {path_str}")
 
     def _remove_bookmark(self, path_str: str) -> None:
@@ -1912,6 +2333,115 @@ class MainWindow(QMainWindow):
         if ok and choice:
             self._remove_bookmark(choice)
 
+    # --- Recent Directories ---
+
+    MAX_RECENT_DIRS = 10
+
+    def _load_recent_dirs(self) -> list[str]:
+        value = self._settings.value("recent_dirs", [], type=list)
+        return list(value) if value else []
+
+    def add_recent_directory(self, path: Path) -> None:
+        """Add a directory to the recent directories list.
+
+        Args:
+            path: Directory path to add.
+        """
+        if not path.is_dir():
+            return
+        path_str = str(path)
+        recent = self._load_recent_dirs()
+        # Move to front if already present
+        if path_str in recent:
+            recent.remove(path_str)
+        recent.insert(0, path_str)
+        recent = recent[: self.MAX_RECENT_DIRS]
+        self._settings.setValue("recent_dirs", recent)
+        self._rebuild_recent_dirs_menu()
+
+    def _clear_recent_dirs(self) -> None:
+        """Clear the recent directories list."""
+        self._settings.setValue("recent_dirs", [])
+        self._rebuild_recent_dirs_menu()
+
+    def _rebuild_recent_dirs_menu(self) -> None:
+        """Rebuild the Recent Directories menu."""
+        self._recent_dirs_menu.clear()
+
+        recent = self._load_recent_dirs()
+        if not recent:
+            empty = QAction("(no recent directories)", self)
+            empty.setEnabled(False)
+            self._recent_dirs_menu.addAction(empty)
+            return
+
+        for path_str in recent:
+            p = Path(path_str)
+            act = QAction(p.name or path_str, self)
+            act.setToolTip(path_str)
+            act.triggered.connect(lambda _checked, pp=p: self.recent_dir_selected.emit(pp))
+            self._recent_dirs_menu.addAction(act)
+
+        self._recent_dirs_menu.addSeparator()
+        clear_action = QAction("Clear Recent", self)
+        clear_action.triggered.connect(self._clear_recent_dirs)
+        self._recent_dirs_menu.addAction(clear_action)
+
+    # --- Keyboard shortcuts dialog ---
+
+    def _show_shortcuts_dialog(self) -> None:
+        """Show a keyboard shortcuts reference dialog."""
+        shortcuts_text = (
+            "<h3>Keyboard Shortcuts</h3>"
+            "<h4>Application</h4>"
+            "<ul>"
+            "<li><b>Ctrl+O</b> — Open directory</li>"
+            "<li><b>Ctrl+K</b> or <b>/</b> — Focus search</li>"
+            "<li><b>Ctrl+H</b> — Show/hide hidden files</li>"
+            "<li><b>Ctrl+T</b> — Toggle file tree</li>"
+            "<li><b>Ctrl+F</b> — Toggle filter panel</li>"
+            "<li><b>Ctrl+L</b> — Toggle node labels</li>"
+            "<li><b>Ctrl+D</b> — Bookmark current directory</li>"
+            "<li><b>F5</b> — Refresh</li>"
+            "<li><b>F1</b> — Keyboard shortcuts</li>"
+            "<li><b>Esc</b> — Clear search / selection</li>"
+            "<li><b>Ctrl+Q</b> — Exit</li>"
+            "</ul>"
+            "<h4>Navigation History</h4>"
+            "<ul>"
+            "<li><b>Alt+Left</b> / <b>Alt+Right</b> — Back / Forward</li>"
+            "<li><b>Alt+Up</b> or <b>Backspace</b> — Parent directory</li>"
+            "<li><b>Alt+Home</b> — Home directory</li>"
+            "</ul>"
+            "<h4>3D View (Orbit Mode)</h4>"
+            "<ul>"
+            "<li><b>Left-drag</b> — Rotate camera</li>"
+            "<li><b>Right-drag</b> / <b>Middle-drag</b> — Pan camera</li>"
+            "<li><b>Shift+Left-drag</b> — Pan camera (macOS trackpad)</li>"
+            "<li><b>Scroll</b> — Zoom in/out</li>"
+            "<li><b>Click</b> — Select node</li>"
+            "<li><b>Double-click directory</b> — Enter directory</li>"
+            "<li><b>Double-click file</b> — Open with default app</li>"
+            "<li><b>Home</b> — Reset view</li>"
+            "</ul>"
+            "<h4>Fly Mode</h4>"
+            "<ul>"
+            "<li><b>F</b> — Toggle Fly Mode</li>"
+            "<li><b>W/S</b> — Forward / Backward</li>"
+            "<li><b>A/D</b> — Strafe Left / Right</li>"
+            "<li><b>Q/E</b> — Down / Up</li>"
+            "<li><b>Shift</b> — Sprint</li>"
+            "<li><b>Left/Right-drag</b> — Look around</li>"
+            "</ul>"
+            "<h4>Search</h4>"
+            "<ul>"
+            "<li><b>Enter</b> / <b>Down</b> — Next result</li>"
+            "<li><b>Shift+Enter</b> / <b>Up</b> — Previous result</li>"
+            "<li><b>Esc</b> — Clear search</li>"
+            "</ul>"
+        )
+        QMessageBox.information(self, "Keyboard Shortcuts", shortcuts_text)
+
     # --- Settings persistence ---
 
     def _restore_settings(self) -> None:
@@ -1926,12 +2456,17 @@ class MainWindow(QMainWindow):
         if sound_on:
             self._toggle_sound_action.setChecked(True)
             self.sound_toggled.emit(True)
+        # Mini map visibility
+        mini_map_visible = self._settings.value("view/mini_map", True, type=bool)
+        self.set_mini_map_visible(mini_map_visible)
+        # Color mode is restored by the controller after it loads preferences
 
     def _save_settings(self) -> None:
         self._settings.setValue("window/geometry", self.saveGeometry())
         self._settings.setValue("window/state", self.saveState())
         self._settings.setValue("view/sound", self._toggle_sound_action.isChecked())
         self._settings.setValue("view/colorblind", self._colorblind_action.isChecked())
+        self._settings.setValue("view/mini_map", self._toggle_mini_map_action.isChecked())
         self._settings.setValue("last_path", str(self._root_path))
 
     def closeEvent(self, event) -> None:
@@ -1956,6 +2491,14 @@ class MainWindow(QMainWindow):
         """Get the file tree widget."""
         return self._file_tree
 
+    def set_tree_selection(self, nodes: set) -> None:
+        """Update the file tree selection without triggering feedback loops.
+
+        Args:
+            nodes: Set of Node objects to select.
+        """
+        self._file_tree.set_selected_nodes(nodes)
+
     @property
     def show_labels(self) -> bool:
         """Get whether labels are shown."""
@@ -1974,6 +2517,72 @@ class MainWindow(QMainWindow):
     def mini_map(self) -> MiniMap | None:
         """Get the mini map widget."""
         return self._mini_map
+
+    def set_search_result_count(self, current: int, total: int) -> None:
+        """Update the search result count display in the search bar.
+
+        Args:
+            current: Current result index (1-based) or 0 if none.
+            total: Total number of results.
+        """
+        if self._search_bar is not None:
+            self._search_bar.set_result_count(current, total)
+
+    def set_selected_node_path(self, path: str | None) -> None:
+        """Display the selected node's path in the status bar.
+
+        Args:
+            path: Full path to display, or None to clear.
+        """
+        if self._selected_path_label is None:
+            return
+        if path:
+            self._selected_path_label.setText(self._truncate_path(path, 80))
+            self._selected_path_label.setToolTip(path)
+        else:
+            self._selected_path_label.setText("")
+            self._selected_path_label.setToolTip("")
+
+    def set_filter_status(self, text: str | None) -> None:
+        """Display a persistent filter summary in the status bar.
+
+        Args:
+            text: Filter summary text, or None to clear.
+        """
+        if self._filter_status_label is None:
+            return
+        self._filter_status_label.setText(text or "")
+        self._filter_status_label.setToolTip(text or "")
+
+    def show_toast(self, message: str, duration_ms: int = 2000) -> None:
+        """Show a temporary toast notification over the renderer.
+
+        Args:
+            message: Message text to display.
+            duration_ms: How long to show the toast in milliseconds.
+        """
+        if self._toast_overlay is not None:
+            self._toast_overlay.show_message(message, duration_ms)
+
+    @staticmethod
+    def _truncate_path(path: str, max_length: int) -> str:
+        """Truncate a long path for status bar display.
+
+        Args:
+            path: Path string to truncate.
+            max_length: Maximum allowed length.
+
+        Returns:
+            Truncated path with ellipsis in the middle if needed.
+        """
+        if len(path) <= max_length:
+            return path
+        if max_length < 10:
+            return path[:max_length]
+        # Keep the last portion (filename/dirname) and truncate the middle
+        suffix_len = max_length // 2
+        prefix_len = max_length - suffix_len - 3
+        return path[:prefix_len] + "..." + path[-suffix_len:]
 
     def set_status_message(self, message: str) -> None:
         """Set status bar message.
@@ -2025,6 +2634,8 @@ class MainWindow(QMainWindow):
             self._text_overlay,
             getattr(self, '_file_tooltip', None),
             getattr(self, '_file_age_legend', None),
+            getattr(self, '_file_type_legend', None),
+            getattr(self, '_toast_overlay', None),
             getattr(self, '_onboarding', None),
         )
         for overlay in full_size_overlays:

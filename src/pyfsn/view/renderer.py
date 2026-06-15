@@ -99,6 +99,18 @@ class Renderer(QOpenGLWidget):
             "focused": np.array([1.0, 0.8, 0.0, 1.0], dtype=np.float32),
         }
 
+        # Type-mode category colors (RGBA, alpha will be set to 0.8 for file blocks)
+        self._type_colors = {
+            "image": np.array([1.0, 0.4, 0.7, 1.0], dtype=np.float32),      # Pink
+            "video": np.array([1.0, 0.2, 0.2, 1.0], dtype=np.float32),      # Red
+            "audio": np.array([1.0, 0.6, 0.2, 1.0], dtype=np.float32),      # Orange
+            "document": np.array([1.0, 0.85, 0.2, 1.0], dtype=np.float32),  # Yellow
+            "code": np.array([0.2, 0.9, 0.6, 1.0], dtype=np.float32),       # Green/Teal
+            "archive": np.array([0.7, 0.5, 0.3, 1.0], dtype=np.float32),    # Brown
+            "data": np.array([0.4, 0.7, 1.0, 1.0], dtype=np.float32),       # Light blue
+            "other": np.array([0.6, 0.6, 0.7, 1.0], dtype=np.float32),      # Gray
+        }
+
         # Animation timer
         self._update_timer = QTimer(self)
         self._update_timer.timeout.connect(self._on_timer)
@@ -129,6 +141,23 @@ class Renderer(QOpenGLWidget):
 
         # OpenGL state
         self._initialized = False
+
+    def _calculate_type_color(self, node: Node) -> np.ndarray:
+        """Calculate color based on file type category.
+
+        Args:
+            node: Node to calculate color for.
+
+        Returns:
+            RGBA color array.
+        """
+        category = node.file_category
+        return self._type_colors.get(category, self._type_colors["other"]).copy()
+
+    @property
+    def type_color_map(self) -> dict[str, np.ndarray]:
+        """Return the mapping of file category names to colors."""
+        return self._type_colors.copy()
 
     def _calculate_age_color(self, mtime: float) -> np.ndarray:
         """Calculate color based on file age (SGI fsn style).
@@ -1028,7 +1057,7 @@ class Renderer(QOpenGLWidget):
         elif self._color_mode == ColorMode.AGE:
             color = self._calculate_age_color(node.mtime)
         else:
-            color = np.array([0.6, 0.6, 0.7, 1.0], dtype=np.float32)
+            color = self._calculate_type_color(node)
 
         # Semi-transparent file blocks (SGI fsn style translucency)
         color[3] = 0.8
@@ -1547,7 +1576,7 @@ class Renderer(QOpenGLWidget):
                     elif self._color_mode == ColorMode.AGE:
                         self._cubes[idx].color = self._calculate_age_color(node.mtime)
                     else:
-                        self._cubes[idx].color = self._colors["file"].copy()
+                        self._cubes[idx].color = self._calculate_type_color(node)
 
         # Update colors for all platforms
         for path, idx in self._node_to_platform.items():
@@ -1589,7 +1618,7 @@ class Renderer(QOpenGLWidget):
                 elif self._color_mode == ColorMode.AGE:
                     self._cubes[idx].color = self._calculate_age_color(node.mtime)
                 else:
-                    self._cubes[idx].color = self._colors["file"].copy()
+                    self._cubes[idx].color = self._calculate_type_color(node)
 
         self.update()
 
@@ -1619,7 +1648,7 @@ class Renderer(QOpenGLWidget):
                     elif self._color_mode == ColorMode.AGE:
                         self._cubes[idx].color = self._calculate_age_color(node.mtime)
                     else:
-                        self._cubes[idx].color = self._colors["file"].copy()
+                        self._cubes[idx].color = self._calculate_type_color(node)
             # Handle directory platforms
             elif path in self._node_to_platform:
                 idx = self._node_to_platform[path]

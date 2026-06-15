@@ -78,7 +78,7 @@ class FilterPanel(QWidget):
         min_size_layout = QHBoxLayout()
         min_size_layout.addWidget(QLabel("Min:"))
         self._min_size_input = QLineEdit()
-        self._min_size_input.setPlaceholderText("0")
+        self._min_size_input.setPlaceholderText("e.g. 10MB")
         self._min_size_input.textChanged.connect(self._on_filter_changed)
         min_size_layout.addWidget(self._min_size_input)
         size_layout.addLayout(min_size_layout)
@@ -87,7 +87,7 @@ class FilterPanel(QWidget):
         max_size_layout = QHBoxLayout()
         max_size_layout.addWidget(QLabel("Max:"))
         self._max_size_input = QLineEdit()
-        self._max_size_input.setPlaceholderText("Unlimited")
+        self._max_size_input.setPlaceholderText("e.g. 1GB")
         self._max_size_input.textChanged.connect(self._on_filter_changed)
         max_size_layout.addWidget(self._max_size_input)
         size_layout.addLayout(max_size_layout)
@@ -187,9 +187,9 @@ class FilterPanel(QWidget):
         clear_btn.clicked.connect(self._clear_filters)
         actions_layout.addWidget(clear_btn)
 
-        apply_btn = QPushButton("Apply")
-        apply_btn.clicked.connect(self._on_filter_changed)
-        actions_layout.addWidget(apply_btn)
+        defaults_btn = QPushButton("Reset to Defaults")
+        defaults_btn.clicked.connect(self._reset_to_defaults)
+        actions_layout.addWidget(defaults_btn)
 
         layout.addLayout(actions_layout)
 
@@ -267,6 +267,51 @@ class FilterPanel(QWidget):
         self._include_ancestors_cb.setChecked(True)
         self.filters_cleared.emit()
 
+    def _reset_to_defaults(self) -> None:
+        """Reset filters to their default state."""
+        self._clear_filters()
+
+    @staticmethod
+    def _parse_size(text: str) -> int | None:
+        """Parse a human-readable size string into bytes.
+
+        Supports plain bytes and suffixes such as B, KB, MB, GB, TB,
+        and their case-insensitive variants (e.g. 1.5gb, 10MB).
+
+        Args:
+            text: The size string to parse.
+
+        Returns:
+            Size in bytes or None if parsing fails.
+        """
+        text = text.strip()
+        if not text:
+            return None
+
+        text = text.replace(" ", "")
+        multipliers = {
+            "TB": 1024 ** 4,
+            "GB": 1024 ** 3,
+            "MB": 1024 ** 2,
+            "KB": 1024,
+            "B": 1,
+        }
+
+        upper_text = text.upper()
+        for suffix, multiplier in multipliers.items():
+            if upper_text.endswith(suffix):
+                number_part = text[: -len(suffix)]
+                try:
+                    value = float(number_part)
+                except ValueError:
+                    return None
+                return int(value * multiplier)
+
+        try:
+            return int(text)
+        except ValueError:
+            return None
+
     def get_filters(self) -> dict:
         """Get current filter criteria.
 
@@ -286,14 +331,14 @@ class FilterPanel(QWidget):
             'include_ancestors': self._include_ancestors_cb.isChecked(),
         }
 
-        # Parse size filters
-        try:
-            if self._min_size_input.text().strip():
-                filters['min_size'] = int(self._min_size_input.text())
-            if self._max_size_input.text().strip():
-                filters['max_size'] = int(self._max_size_input.text())
-        except ValueError:
-            pass  # Invalid input, ignore
+        # Parse size filters (supports human-readable units)
+        min_size = self._parse_size(self._min_size_input.text())
+        if min_size is not None and min_size >= 0:
+            filters['min_size'] = min_size
+
+        max_size = self._parse_size(self._max_size_input.text())
+        if max_size is not None and max_size >= 0:
+            filters['max_size'] = max_size
 
         # Calculate min mtime from days
         days = self._min_days_input.value()

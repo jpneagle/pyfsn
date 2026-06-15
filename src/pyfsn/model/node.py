@@ -147,6 +147,86 @@ class Node:
         return suffix in video_extensions
 
     @property
+    def file_category(self) -> str:
+        """Categorize a file by extension for type-based coloring.
+
+        Returns:
+            Category key such as 'image', 'video', 'audio', 'document',
+            'code', 'archive', 'data', or 'other'.
+        """
+        if not self.is_file:
+            return "other"
+
+        suffix = self.path.suffix.lower()
+
+        if suffix in {
+            '.png', '.jpg', '.jpeg', '.jpe', '.jfif',
+            '.gif', '.bmp', '.webp', '.svg', '.ico',
+            '.tiff', '.tif', '.psd', '.raw', '.cr2',
+            '.nef', '.arw', '.heic', '.heif', '.avif',
+        }:
+            return "image"
+        if suffix in {
+            '.mp4', '.avi', '.mkv', '.mov', '.wmv',
+            '.flv', '.webm', '.m4v', '.mpg', '.mpeg',
+            '.3gp', '.ogv', '.m2ts', '.mts', '.vob',
+            '.rm', '.rmvb', '.asf', '.divx', '.xvid',
+            '.f4v', '.mxf', '.qt',
+        }:
+            return "video"
+        if suffix in {
+            '.mp3', '.wav', '.flac', '.aac', '.ogg',
+            '.m4a', '.wma', '.aiff', '.opus', '.ra',
+        }:
+            return "audio"
+        if suffix in {
+            '.pdf', '.doc', '.docx', '.txt', '.rtf',
+            '.odt', '.md', '.epub', '.tex', '.pages',
+        }:
+            return "document"
+        if suffix in {
+            '.py', '.js', '.ts', '.rs', '.go', '.java',
+            '.cpp', '.c', '.h', '.hpp', '.cs', '.swift',
+            '.kt', '.rb', '.php', '.sh', '.bash', '.zsh',
+            '.fish', '.pl', '.lua', '.r', '.m', '.scala',
+            '.html', '.htm', '.css', '.scss', '.sql',
+            '.json', '.yaml', '.yml', '.xml', '.toml',
+        }:
+            return "code"
+        if suffix in {
+            '.zip', '.rar', '.7z', '.tar', '.gz',
+            '.bz2', '.xz', '.tgz', '.tbz', '.dmg',
+            '.iso',
+        }:
+            return "archive"
+        if suffix in {
+            '.csv', '.xls', '.xlsx', '.db', '.sqlite',
+            '.parquet',
+        }:
+            return "data"
+
+        return "other"
+
+    @staticmethod
+    def format_size(size: int) -> str:
+        """Format a byte size as a human-readable string.
+
+        Args:
+            size: Size in bytes.
+
+        Returns:
+            Human-readable size string (B, KB, MB, GB).
+        """
+        if size < 1024:
+            return f"{size} B"
+        elif size < 1024 * 1024:
+            return f"{size / 1024:.1f} KB"
+        elif size < 1024 * 1024 * 1024:
+            return f"{size / (1024 * 1024):.1f} MB"
+        else:
+            return f"{size / (1024 * 1024 * 1024):.1f} GB"
+
+    @property
     def is_file(self) -> bool:
         """Check if this node is a file."""
         return self.type == NodeType.FILE

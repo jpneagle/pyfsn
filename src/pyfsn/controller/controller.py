@@ -18,7 +18,7 @@ from pyfsn.model.node import Node, NodeType
 from pyfsn.model.scanner import Scanner, ScannerWorker, ScanProgress
 from pyfsn.errors import FileOpenError
 from pyfsn.layout.engine import LayoutEngine, LayoutConfig, LayoutResult
-from pyfsn.view.renderer import Renderer
+from pyfsn.view.renderer import Renderer, ColorMode
 from pyfsn.view.camera import CameraMode
 from pyfsn.view.main_window import MainWindow
 from pyfsn.view.sound import SoundManager
@@ -59,6 +59,18 @@ class Controller(QObject):
         self._root_path = root_path
         self._original_root_path = root_path
         self._root_node: Node | None = None
+        self._show_hidden_cli = show_hidden
+        self._lazy_depth = lazy_depth
+
+        # Restore view preferences before building the window/scanner so that
+        # CLI flags can override persisted settings when explicitly provided.
+        from PyQt6.QtCore import QSettings
+        self._settings = QSettings("pyfsn", "pyfsn")
+        self._show_hidden = self._settings.value("view/show_hidden", False, type=bool)
+        if show_hidden:
+            # CLI explicitly requested hidden files
+            self._show_hidden = True
+        self._color_mode = self._settings.value("view/color_mode", "age", type=str)
 
         # Create main window
         self._window = MainWindow(root_path)
@@ -84,7 +96,7 @@ class Controller(QObject):
         self._layout_engine = LayoutEngine(self._layout_config)
 
         # Create scanner
-        self._scanner = Scanner(lazy_depth=lazy_depth, show_hidden=show_hidden)
+        self._scanner = Scanner(lazy_depth=lazy_depth, show_hidden=self._show_hidden)
         self._scan_worker: ScannerWorker | None = None
 
         # Scene data
@@ -108,6 +120,9 @@ class Controller(QObject):
         self._active_filters: dict = {}
         self._filtered_nodes: dict[str, Node] = {}
 
+        # Selection sync guard to prevent 3D <-> tree feedback loops
+        self._updating_selection = False
+
         # Sound effects (disabled by default)
         self._sound = SoundManager()
 
@@ -120,13 +135,20 @@ class Controller(QObject):
         self._window.set_active_theme(self._current_theme_key())
 
         # Restore persisted view preferences (colorblind palette, sound)
-        from PyQt6.QtCore import QSettings
-        _settings = QSettings("pyfsn", "pyfsn")
-        if _settings.value("view/colorblind", False, type=bool):
+        if self._settings.value("view/colorblind", False, type=bool):
             self._renderer.set_colorblind_mode(True)
             self._window.set_colorblind_checked(True)
-        if _settings.value("view/sound", False, type=bool):
+        if self._settings.value("view/sound", False, type=bool):
             self._sound.enabled = True
+
+        # Sync color mode and hidden-files UI state
+        self._renderer.set_color_mode(ColorMode(self._color_mode))
+        self._window.set_color_mode_checked(self._color_mode)
+        self._window.set_color_mode_legend(
+            self._color_mode,
+            self._renderer.type_color_map if self._color_mode == "type" else None,
+        )
+        self._window.set_show_hidden_checked(self._show_hidden)
 
         # Text overlay update timer
         self._overlay_timer = QTimer()
@@ -144,12 +166,16 @@ class Controller(QObject):
         """Connect internal signals."""
         self.scene_loaded.connect(self._window.update_stats)
         self.scan_progress.connect(self._window.set_status_message)
+        self.node_selected.connect(self._on_node_selected_status)
 
         # Connect window signals
         self._window.directory_changed.connect(self._change_directory)
         self._window.search_requested.connect(self._perform_search)
+        self._window.next_search_result_requested.connect(self.next_search_result)
+        self._window.previous_search_result_requested.connect(self.previous_search_result)
         self._window.file_tree.node_selected.connect(self._on_tree_node_selected)
         self._window.tree_node_double_clicked.connect(self._on_tree_node_double_clicked)
+        self._window.tree_selection_changed.connect(self._on_tree_selection_changed)
 
         # Connect navigation history signals
         self._window.go_back_requested.connect(self.go_back)
@@ -165,7 +191,7 @@ class Controller(QObject):
         self._window.filter_changed.connect(self._apply_filters)
 
         # Sound toggle
-        self._window.sound_toggled.connect(lambda enabled: setattr(self._sound, 'enabled', enabled))
+        self._window.sound_toggled.connect(self._on_sound_toggled)
 
         # Theme selection
         self._window.theme_selected.connect(self._on_theme_selected)
@@ -173,11 +199,23 @@ class Controller(QObject):
         # Colorblind palette toggle
         self._window.colorblind_toggled.connect(self._on_colorblind_toggled)
 
+        # Show hidden files toggle
+        self._window.show_hidden_toggled.connect(self._on_show_hidden_toggled)
+
+        # Color mode selection
+        self._window.color_mode_selected.connect(self._on_color_mode_selected)
+
         # Bookmarks
         self._window.bookmark_add_requested.connect(
             lambda: self._window.add_bookmark(self._root_path)
         )
         self._window.bookmark_selected.connect(self._on_bookmark_selected)
+
+        # Recent directories
+        self._window.recent_dir_selected.connect(self._on_recent_dir_selected)
+
+        # File tree context menu
+        self._window.tree_context_menu_requested.connect(self._show_context_menu)
 
         # Mini map click-to-navigate
         if self._window.mini_map is not None:
@@ -195,6 +233,7 @@ class Controller(QObject):
 
     def start(self) -> None:
         """Start the application - begin scanning."""
+        self._window.add_recent_directory(self._root_path)
         self._start_scan()
 
     def show(self) -> None:
@@ -251,6 +290,7 @@ class Controller(QObject):
             self._forward_stack.clear()
 
         self._navigate_to_path(path)
+        self._window.add_recent_directory(path)
 
         # Update navigation state
         self._emit_navigation_state()
@@ -281,8 +321,9 @@ class Controller(QObject):
         Args:
             progress: ScanProgress object with current status
         """
-        # Create message from progress info
-        message = f"Scanning: {progress.current_path} ({progress.nodes_found} nodes)"
+        # Create concise message from progress info
+        current_name = progress.current_path.name or str(progress.current_path)
+        message = f"Scanning {current_name}... ({progress.nodes_found} nodes)"
         self.scan_progress.emit(message)
 
     def _on_scan_complete(self, root: Node) -> None:
@@ -464,6 +505,7 @@ class Controller(QObject):
         """
         if not query or not self._nodes:
             self._search_results.clear()
+            self._window.set_search_result_count(0, 0)
             # Clear spotlight visualization
             if hasattr(self._renderer, 'clear_spotlight_search'):
                 self._renderer.clear_spotlight_search()
@@ -496,6 +538,7 @@ class Controller(QObject):
             self._show_search_result()
             self.scan_progress.emit(f"Found {len(self._search_results)} results for '{query}'")
         else:
+            self._window.set_search_result_count(0, 0)
             self.scan_progress.emit(f"No results found for '{query}'")
             # Clear spotlight when no results
             if hasattr(self._renderer, 'clear_spotlight_search'):
@@ -504,6 +547,7 @@ class Controller(QObject):
     def _show_search_result(self) -> None:
         """Show the current search result."""
         if not self._search_results:
+            self._window.set_search_result_count(0, 0)
             return
 
         node = self._search_results[self._current_search_index]
@@ -523,6 +567,9 @@ class Controller(QObject):
         # Update file tree
         self._window.file_tree.select_node(node)
 
+        self._window.set_search_result_count(
+            self._current_search_index + 1, len(self._search_results)
+        )
         self.scan_progress.emit(f"Result {self._current_search_index + 1}/{len(self._search_results)}: {node.name}")
 
     def next_search_result(self) -> None:
@@ -563,6 +610,7 @@ class Controller(QObject):
             # No filters, show all nodes
             self._filtered_nodes.clear()
             self._load_scene()
+            self._window.set_filter_status(None)
             self.scan_progress.emit(f"Showing all {len(self._nodes)} items")
             return
 
@@ -622,10 +670,12 @@ class Controller(QObject):
         # Update the scene with filtered nodes
         self._load_filtered_scene()
 
-        # Update status message
+        # Update status message and persistent filter indicator
         filter_desc = self._get_filter_description(filters)
         ancestor_note = " + ancestors" if filters.get('include_ancestors', True) and len(self._filtered_nodes) > filtered_count else ""
-        self.scan_progress.emit(f"Showing {filtered_count}/{len(self._nodes)} items{filter_desc}{ancestor_note}")
+        status_text = f"Showing {filtered_count}/{len(self._nodes)} items{filter_desc}{ancestor_note}"
+        self._window.set_filter_status(status_text)
+        self.scan_progress.emit(status_text)
 
     def _get_filter_description(self, filters: dict) -> str:
         """Get a human-readable description of active filters.
@@ -738,6 +788,7 @@ class Controller(QObject):
                 # Open file with default application
                 try:
                     self._open_file(node)
+                    self._window.show_toast(f"Opened: {node.name}")
                     self.scan_progress.emit(f"Opened: {node.name}")
                 except FileOpenError as e:
                     self._show_file_open_error(node, e)
@@ -794,6 +845,10 @@ class Controller(QObject):
         """
         self._focused_node = node
 
+    def _on_node_selected_status(self, node: Node) -> None:
+        """Update status bar with selected node path."""
+        self._window.set_selected_node_path(str(node.path))
+
     def _on_camera_mode_changed(self, mode) -> None:
         """Handle camera mode change from input handler.
 
@@ -833,6 +888,35 @@ class Controller(QObject):
             except FileOpenError as e:
                 self._show_file_open_error(node, e)
 
+    def _on_tree_selection_changed(self, selected_nodes: set[Node]) -> None:
+        """Handle selection change from file tree.
+
+        Args:
+            selected_nodes: Set of selected nodes
+        """
+        if self._updating_selection:
+            return
+
+        self._updating_selection = True
+        self._selected_nodes = selected_nodes.copy()
+        self._window.update_stats(len(self._nodes), len(selected_nodes))
+
+        if selected_nodes:
+            node = next(iter(selected_nodes))
+            self._focused_node = node
+            self._window.set_selected_node_path(str(node.path))
+            # Update renderer selection (sync 3D view)
+            selected_paths = {str(n.path) for n in selected_nodes}
+            if hasattr(self._renderer, 'set_selection'):
+                self._renderer.set_selection(selected_paths, self._nodes)
+        else:
+            self._focused_node = None
+            self._window.set_selected_node_path(None)
+            if hasattr(self._renderer, 'clear_selection'):
+                self._renderer.clear_selection()
+
+        self._updating_selection = False
+
     def _on_selection_changed(self, selected_nodes: set[Node]) -> None:
         """Handle selection change from input handler.
 
@@ -841,6 +925,18 @@ class Controller(QObject):
         """
         self._selected_nodes = selected_nodes
         self._window.update_stats(len(self._nodes), len(selected_nodes))
+        if selected_nodes:
+            # Display path of the most recently focused/selected node if available
+            node = self._focused_node or next(iter(selected_nodes))
+            self._window.set_selected_node_path(str(node.path))
+        else:
+            self._window.set_selected_node_path(None)
+
+        # Sync tree selection without re-entering this handler
+        if not self._updating_selection:
+            self._updating_selection = True
+            self._window.set_tree_selection(selected_nodes)
+            self._updating_selection = False
 
     def _update_selection_visual(self) -> None:
         """Update visual selection state."""
@@ -1070,6 +1166,7 @@ class Controller(QObject):
             QMessageBox.critical(self._window, "Rename Failed", str(e))
             return
 
+        self._window.show_toast(f"Renamed to: {new_name}")
         self.scan_progress.emit(f"Renamed to: {new_name}")
         self.refresh()
 
@@ -1089,6 +1186,7 @@ class Controller(QObject):
         if not self._move_to_trash(path):
             return
 
+        self._window.show_toast(f"Moved to trash: {path.name}")
         self.scan_progress.emit(f"Moved to trash: {path.name}")
         self.refresh()
 
@@ -1264,6 +1362,11 @@ class Controller(QObject):
                 return key
         return current.name.lower().replace(" ", "_")
 
+    def _on_sound_toggled(self, enabled: bool) -> None:
+        """Toggle UI sound effects and persist preference."""
+        self._sound.enabled = enabled
+        self._settings.setValue("view/sound", enabled)
+
     def _on_theme_selected(self, key: str) -> None:
         """Apply a theme chosen from the View > Theme menu and persist it."""
         try:
@@ -1278,6 +1381,31 @@ class Controller(QObject):
         """Toggle the colorblind-friendly age palette."""
         self._renderer.set_colorblind_mode(enabled)
         self._window.set_colorblind_checked(enabled)
+        self._settings.setValue("view/colorblind", enabled)
+
+    def _on_show_hidden_toggled(self, enabled: bool) -> None:
+        """Toggle hidden file visibility and refresh the view."""
+        self._show_hidden = enabled
+        self._scanner.show_hidden = enabled
+        self._settings.setValue("view/show_hidden", enabled)
+        self.scan_progress.emit("Hidden files: " + ("shown" if enabled else "hidden"))
+        self.refresh()
+
+    def _on_color_mode_selected(self, mode: str) -> None:
+        """Switch file cube color mode and persist preference."""
+        try:
+            new_mode = ColorMode(mode.lower())
+        except ValueError:
+            return
+        self._color_mode = mode
+        self._renderer.set_color_mode(new_mode)
+        self._window.set_color_mode_checked(mode)
+        self._window.set_color_mode_legend(
+            mode,
+            self._renderer.type_color_map if mode == "type" else None,
+        )
+        self._settings.setValue("view/color_mode", mode)
+        self.scan_progress.emit(f"Color mode: {mode.capitalize()}")
 
     def _on_bookmark_selected(self, path: Path) -> None:
         """Navigate to a bookmarked directory."""
@@ -1285,6 +1413,13 @@ class Controller(QObject):
             self._change_directory(path)
         else:
             self.scan_progress.emit(f"Bookmark not found: {path}")
+
+    def _on_recent_dir_selected(self, path: Path) -> None:
+        """Navigate to a recently used directory."""
+        if path.exists():
+            self._change_directory(path)
+        else:
+            self.scan_progress.emit(f"Recent directory not found: {path}")
 
     def _on_mini_map_clicked(self, world_x: float, world_z: float) -> None:
         """Move the camera to look at the clicked mini-map location."""

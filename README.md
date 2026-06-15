@@ -34,13 +34,20 @@ pyfsn はファイルシステムを没入感のある 3D 空間で可視化し�
 - **メディアプレビュー**: 画像ファイルにホバーでサムネイル表示；動画ファイルは 4 シーンのダイジェスト再生（バックグラウンドスレッド）
 - **テーマシステム**: 複数テーマ（SGI Classic、Dark Mode、Cyberpunk、Solarized など）
 - **ブルーム & 発光エフェクト**: ファイルタイプ別グロウエフェクトとアニメーションワイヤーパルス
-- **2D ミニマップ**: 3D シーンのレーダー風オーバービュー（クリックでカメラ移動）
+- **2D ミニマップ**: 3D シーンのレーダー風オーバービュー（クリックでカメラ移動；View メニュー / `Ctrl+M` 表示切替）
 - **パンくずナビ**: クリック可能なパス階層バーで上位ディレクトリへ即移動
 - **履歴ナビゲーション**: ブラウザ風の戻る/進む（`Alt+←` / `Alt+→`）
 - **ブックマーク**: よく使うディレクトリを保存して即ジャンプ（`Ctrl+D`）
+- **最近使用したディレクトリ**: 履歴から素早くディレクトリを再オープン
 - **テーマ切替メニュー**: View › Theme から SGI Classic / Dark / Cyberpunk など即時切替・自動保存
+- **View メニュー**: ファイルツリー・フィルターパネル・ラベル・ミニマップ・隠しファイル・色分けモードの切替
 - **色覚多様性パレット**: ファイル年齢色を識別しやすい配色に切替（View › Colorblind Palette）
-- **設定の永続化**: ウィンドウ位置・最後に開いたディレクトリ・テーマ・サウンドを記憶
+- **強化されたファイルツリー**: 変更日時カラム、人間可読なサイズ表示、右クリックコンテキストメニュー、多選択対応
+- **双方向多選択同期**: 3D ビューとファイルツリーの選択を相互に同期
+- **強化された種別カラーモード**: 画像 / 動画 / 音声 / ドキュメント / コード / アーカイブ / データ / その他の 8 カテゴリ色分けと凡例表示
+- **ステータスバー**: 選択パス、フィルター適用状態、スキャン進捗を表示
+- **トースト通知**: 軽量なフィードバックオーバーレイ
+- **設定の永続化**: ウィンドウ位置・パネル表示状態・最後に開いたディレクトリ・最近使用ディレクトリ・テーマ・サウンド・View オプションを記憶
 - **ファイル操作**: 右クリックからリネーム・ゴミ箱へ移動（確認ダイアログ付き）
 - **初回オンボーディング**: 起動時に基本操作をガイド表示
 - **読み込みインジケータ**: スキャン中の進捗をステータスバーに表示
@@ -134,10 +141,11 @@ pyfsn ウィンドウは以下で構成されます:
 
 - **メインビューポート**: ファイルシステムの 3D 可視化
 - **コントロールパネル**（右）: ナビゲーションコントロール、フライモード切り替え、表示オプション、統計情報
-- **検索バー**（上）: リアルタイムファイル検索
-- **ファイルツリーパネル**（ドッキング可能）: 階層ファイルツリービュー
-- **ステータスバー**（下）: 現在のパスとステータスメッセージ
-- **メニューバー**: ファイル、表示、ヘルプメニュー
+- **検索バー**（上）: リアルタイムファイル検索、◀/▶ ナビゲーションボタン、ヒットカウント表示
+- **ファイルツリーパネル**（ドッキング可能）: 階層ファイルツリービュー（多選択・右クリックメニュー対応）
+- **フィルターパネル**（ドッキング可能）: 名前・サイズ・日時・種類による高度なフィルタリング
+- **ステータスバー**（下）: 現在のパス、選択パス、フィルター状態、ステータスメッセージ
+- **メニューバー**: File / View / Go / Bookmarks / Recent / Help メニュー
 
 ### 可視化ガイド
 
@@ -149,6 +157,7 @@ pyfsn ウィンドウは以下で構成されます:
 | **ファイル** | プラットフォーム上のキューブ | ファイル |
 | **キューブの高さ** | ファイルサイズに比例 | 大きいファイル = 高いキューブ |
 | **キューブの色** | ファイルの年齢（SGI fsn スタイル） | 緑=24時間以内、シアン=7日以内、黄=30日以内、橙=365日以内、茶=365日以上 |
+| **種別カラー** | ファイルカテゴリによる色分け | 画像=ピンク、動画=赤、音声=橙、ドキュメント=黄、コード=緑、アーカイブ=茶、データ=青、その他=灰 |
 | **ワイヤーの色** | 白いライン | 親子ディレクトリの接続 |
 | **黄色いグロウ** | 選択アイテム | 現在選択中のファイル/フォルダ |
 | **ハイライトされたワイヤー** | 黄色の太いライン | 選択ノードへの/からの接続 |
@@ -184,7 +193,10 @@ pyfsn ウィンドウは以下で構成されます:
 | 操作 | アクション |
 |------|-----------|
 | **クリック** | アイテムを選択して 3D ビューでナビゲート |
+| **Ctrl/Cmd+クリック** | 複数アイテムを選択 |
+| **Shift+クリック** | 範囲選択 |
 | **ダブルクリック** | ファイルを開く / ディレクトリに移動 |
+| **右クリック** | コンテキストメニュー（3D で表示 / 開く / 名前変更 / ゴミ箱へ） |
 
 #### キーボードコントロール - フライモード（フライモード有効時）
 | キー | アクション |
@@ -220,11 +232,13 @@ pyfsn ウィンドウは以下で構成されます:
 
 検索バーはビジュアルスポットライトエフェクト付きの即時ファイル/フォルダ検索を提供します:
 
-1. **アクティブ化**: 検索バーをクリック
+1. **アクティブ化**: 検索バーをクリック、または `Ctrl+K` / `/`
 2. **入力**: 検索語を入力（大文字小文字を区別しない）
 3. **視覚的フィードバック**: 一致するノードは完全な不透明度でハイライト、非一致ノードは暗くなる
-4. **ナビゲート**: 矢印キーを使用するかファイルツリーの結果をクリック
+4. **ナビゲート**: ◀/▶ ボタン、`↑`/`↓`、または `Shift+Enter` / `Enter` で結果間を移動
 5. **ジャンプ**: Enter キーを押して選択した結果にナビゲート
+
+検索バーの右側には「現在のヒット / 総ヒット数」（例: `2 / 10`）が表示されます。
 
 **スポットライト可視化:**
 - 一致するノードは 100% 不透明度でオリジナルカラーで表示
@@ -243,10 +257,23 @@ pyfsn ウィンドウは以下で構成されます:
 階層ファイルツリーは以下を提供します:
 
 - **構造ビュー**: ディレクトリの従来のツリービュー
-- **カラム**: 名前、サイズ、種類
+- **カラム**: 名前、サイズ、変更日時、種類
+- **人間可読なサイズ**: `1.5 GB` など自動整形されたサイズ表示
 - **クリックでナビゲート**: アイテムをクリックして 3D ビューでジャンプ
-- **同期**: 選択は 3D ビューと同期
+- **多選択**: Ctrl/Cmd や Shift を使った複数選択に対応
+- **右クリックメニュー**: 3D ビューで表示 / 開く / 名前変更 / ゴミ箱へ移動
+- **双方向同期**: 3D ビューとファイルツリーの選択が相互に同期
 - **ドッキング可能**: 移動またはリサイズ可能
+
+### フィルターパネル
+
+名前、サイズ、日時、種類による高度なフィルタリングを提供します:
+
+- **サイズ入力**: `1024`、`10MB`、`1.5GB` など、人間可読な単位で入力可能
+- **日時プリセット**: 24 時間 / 7 日 / 30 日 / 90 日 / 1 年
+- **種類フィルタ**: ファイル / ディレクトリ / シンボリックリンクの表示切替
+- **Reset to Defaults**: フィルターを初期状態に素早く戻す
+- **永続的インジケーター**: フィルター適用時にステータスバーにアイコンを表示
 
 ### ノードラベル
 
@@ -307,8 +334,9 @@ pyfsn/
 │       ├── input_handler.py # マウス/キーボード処理
 │       └── controller.py    # メインアプリケーションコントローラー
 ├── tests/
-│   ├── test_spotlight.py    # スポットライト機能ユニットテスト
-│   └── test_spotlight_demo.py # スポットライトインタラクティブデモ
+│   ├── test_spotlight.py      # スポットライト機能ユニットテスト
+│   ├── test_spotlight_demo.py # スポットライトインタラクティブデモ
+│   └── test_ux_improvements.py # UX 強化機能のユニットテスト
 └── docs/
     ├── API.md               # API ドキュメント
     ├── SPEC.md              # 技術仕様書（日本語）
@@ -391,11 +419,17 @@ pyfsn は Model-View-Controller (MVC) パターンに従います:
 │ アプリケーション（メニューショートカット）                   │
 ├─────────────────────────────────────────────────────────┤
 │ Ctrl+O      ディレクトリを開く                            │
+│ Ctrl+K / /  検索バーにフォーカス                          │
 │ Ctrl+T      ファイルツリーの切り替え                       │
 │ Ctrl+F      フィルターパネルの切り替え                     │
 │ Ctrl+L      ラベルの切り替え                              │
+│ Ctrl+H      隠しファイルの表示切替                         │
+│ Ctrl+M      ミニマップの表示切替                           │
+│ F1          キーボードショートカットチートシート            │
 │ F5          更新                                         │
 │ Ctrl+Q      終了                                         │
+│ Alt+←/→   戻る / 進む                                    │
+│ Alt+↑      親ディレクトリへ移動                           │
 ├─────────────────────────────────────────────────────────┤
 │ フライモード（有効時）                                     │
 ├─────────────────────────────────────────────────────────┤
@@ -542,7 +576,15 @@ pyfsn provides an immersive 3D visualization of your file system. Directories ap
 - **Media Previews**: Hover over image files for thumbnails; video files show dynamic 4-scene digest playback (background threaded)
 - **Theme System**: Multiple themes (SGI Classic, Dark Mode, Cyberpunk, Solarized, etc.)
 - **Bloom & Emissive Effects**: File type-based glow effects and animated wire pulses
-- **2D Mini Map**: Radar-style overview of the 3D scene
+- **2D Mini Map**: Radar-style overview of the 3D scene (toggle via View menu)
+- **Recent Directories**: Quickly reopen recently used directories
+- **View Menu**: Toggle file tree, filter panel, labels, mini map, hidden files, and color mode
+- **Enhanced File Tree**: Modified column, human-readable sizes, right-click context menu, and multi-selection
+- **Bidirectional Multi-Selection Sync**: Sync selections between 3D view and file tree in both directions
+- **Enhanced Type Color Mode**: 8 category colors with File Type Legend (image, video, audio, document, code, archive, data, other)
+- **Status Bar**: Shows current path, selected path, filter-active indicator, and scan progress
+- **Toast Notifications**: Lightweight feedback overlay
+- **Persistent Settings**: Remembers window state, panel visibility, last directory, recent directories, theme, sound, and view options
 - **Performance Optimization**: Frustum culling and Level-of-Detail (LOD) utilities
 - **Cross-Platform**: Works on Linux, macOS, and Windows
 
@@ -633,10 +675,11 @@ The pyfsn window consists of:
 
 - **Main Viewport**: 3D visualization of your file system
 - **Control Panel** (right): Navigation controls, Fly Mode toggle, view options, statistics
-- **Search Bar** (top): Real-time file search
-- **File Tree Panel** (dockable): Hierarchical file tree view
-- **Status Bar** (bottom): Current path and status messages
-- **Menu Bar**: File, View, and Help menus
+- **Search Bar** (top): Real-time file search with ◀/▶ navigation buttons and hit count
+- **File Tree Panel** (dockable): Hierarchical file tree view with multi-selection and right-click menu
+- **Filter Panel** (dockable): Advanced filtering by name, size, age, and type
+- **Status Bar** (bottom): Current path, selected path, filter status, and status messages
+- **Menu Bar**: File, View, Go, Bookmarks, Recent, and Help menus
 
 ### Visualization Guide
 
@@ -648,6 +691,7 @@ The pyfsn window consists of:
 | **File** | Cube on platform | A file |
 | **Cube Height** | Proportional to file size | Larger files = taller cubes |
 | **Cube Color** | By file age (SGI fsn style) | Green=&lt;24h, Cyan=&lt;7d, Yellow=&lt;30d, Orange=&lt;365d, Brown≥365d |
+| **Type Color** | By file category | Image=pink, Video=red, Audio=orange, Document=yellow, Code=green, Archive=brown, Data=blue, Other=gray |
 | **Wire Color** | White lines | Parent-child directory connections |
 | **Yellow Glow** | Selected item | Currently selected file/folder |
 | **Highlighted Wire** | Yellow thick lines | Connections to/from selected nodes |
@@ -683,7 +727,10 @@ The pyfsn window consists of:
 | Action | Operation |
 |--------|-----------|
 | **Click** | Select and navigate to item |
+| **Ctrl/Cmd+Click** | Add/remove item from multi-selection |
+| **Shift+Click** | Select a range of items |
 | **Double-click** | Open file / Navigate to directory |
+| **Right-click** | Context menu (Reveal in 3D / Open / Rename / Move to Trash) |
 
 #### Keyboard Controls - Fly Mode (when Fly Mode is active)
 | Key | Action |
@@ -712,11 +759,13 @@ Note: Use the Control Panel button to toggle Fly Mode. Collision detection is en
 
 The search bar provides instant file/folder search with visual spotlight effects:
 
-1. **Activate**: Click the search bar
+1. **Activate**: Click the search bar, or press `Ctrl+K` / `/`
 2. **Type**: Enter search term (case-insensitive)
 3. **Visual Feedback**: Matching nodes are highlighted at full opacity, non-matching nodes are dimmed
-4. **Navigate**: Use arrow keys or click results in the file tree
+4. **Navigate**: Use ◀/▶ buttons, `↑`/`↓`, or `Shift+Enter` / `Enter` to move between results
 5. **Jump**: Press Enter to navigate to the selected result
+
+The hit counter on the right shows the current and total matches (e.g. `2 / 10`).
 
 **Spotlight Visualization:**
 - Matching nodes displayed at 100% opacity with original colors
@@ -735,10 +784,23 @@ Search finds:
 The hierarchical file tree provides:
 
 - **Structure view**: Traditional tree view of directories
-- **Columns**: Name, Size, Type
+- **Columns**: Name, Size, Modified, Type
+- **Human-readable sizes**: Sizes are auto-formatted (e.g. `1.5 GB`)
 - **Click to navigate**: Click any item to jump to it in 3D view
-- **Sync**: Selection syncs with 3D view
+- **Multi-selection**: Select multiple items with Ctrl/Cmd or Shift
+- **Right-click menu**: Reveal in 3D, Open, Rename, Move to Trash
+- **Bidirectional sync**: Selection syncs both ways with the 3D view
 - **Dockable**: Can be moved or resized
+
+### Filter Panel
+
+Provides advanced filtering by name, size, age, and type:
+
+- **Size input**: Accepts human-readable units such as `1024`, `10MB`, `1.5GB`
+- **Age presets**: Last 24 hours / 7 days / 30 days / 90 days / 1 year
+- **Type filters**: Toggle files, directories, and symbolic links
+- **Reset to Defaults**: Quickly restore default filter criteria
+- **Persistent indicator**: Status bar icon shows when filters are active
 
 ### Node Labels
 
@@ -800,7 +862,8 @@ pyfsn/
 │       └── controller.py    # Main application controller
 ├── tests/
 │   ├── test_spotlight.py    # Spotlight feature unit tests
-│   └── test_spotlight_demo.py # Spotlight interactive demo
+│   ├── test_spotlight_demo.py # Spotlight interactive demo
+│   └── test_ux_improvements.py # UX improvement unit tests
 └── docs/
     ├── API.md               # API documentation
     ├── SPEC.md              # Technical specifications (Japanese)
@@ -883,11 +946,17 @@ See [docs/ADVANCED_EFFECTS.md](docs/ADVANCED_EFFECTS.md) for bloom/emissive/wire
 │ APPLICATION (MENU SHORTCUTS)                            │
 ├─────────────────────────────────────────────────────────┤
 │ Ctrl+O      Open directory                              │
+│ Ctrl+K / /  Focus search                                │
 │ Ctrl+T      Toggle file tree                            │
 │ Ctrl+F      Toggle filter panel                         │
 │ Ctrl+L      Toggle labels                               │
+│ Ctrl+H      Toggle hidden files                         │
+│ Ctrl+M      Toggle mini map                             │
+│ F1          Keyboard shortcuts cheatsheet               │
 │ F5          Refresh                                     │
 │ Ctrl+Q      Exit                                        │
+│ Alt+←/→   Back / Forward                              │
+│ Alt+↑      Parent directory                             │
 ├─────────────────────────────────────────────────────────┤
 │ FLY MODE (when active)                                  │
 ├─────────────────────────────────────────────────────────┤
@@ -1034,7 +1103,15 @@ pyfsn 提供沉浸式 3D 文件系统可视化。目录显示为平台，文件�
 - **媒体预览**：悬停在图像文件上显示缩略图；视频文件显示动态 4 场景摘要播放（后台线程）
 - **主题系统**：多种主题（SGI Classic、Dark Mode、Cyberpunk、Solarized 等）
 - **泛光与发光效果**：基于文件类型的辉光效果和动画连线脉冲
-- **2D 小地图**：3D 场景的雷达风格概览
+- **2D 小地图**：3D 场景的雷达风格概览（通过 View 菜单切换显示）
+- **最近使用目录**：从 Recent 菜单快速重新打开最近使用的目录
+- **View 菜单**：切换文件树、过滤面板、标签、小地图、隐藏文件和着色模式
+- **增强文件树**：新增修改日期列、人可读大小、右键上下文菜单和多选支持
+- **双向多选同步**：3D 视图与文件树的选择相互同步
+- **增强类型着色模式**：8 类别颜色区分并显示图例（图像、视频、音频、文档、代码、压缩包、数据、其他）
+- **状态栏**：显示当前路径、选中路径、过滤激活指示器和扫描进度
+- **Toast 通知**：轻量反馈覆盖层
+- **设置持久化**：记住窗口状态、面板显示、最近目录、主题、音效和视图选项
 - **性能优化**：视锥体裁剪和细节层次（LOD）实用工具
 - **跨平台**：支持 Linux、macOS 和 Windows
 
@@ -1125,10 +1202,11 @@ pyfsn 窗口由以下部分组成：
 
 - **主视口**：文件系统的 3D 可视化
 - **控制面板**（右侧）：导航控件、飞行模式切换、视图选项、统计信息
-- **搜索栏**（顶部）：实时文件搜索
-- **文件树面板**（可停靠）：层级文件树视图
-- **状态栏**（底部）：当前路径和状态消息
-- **菜单栏**：文件、视图和帮助菜单
+- **搜索栏**（顶部）：实时文件搜索，带 ◀/▶ 导航按钮和命中计数
+- **文件树面板**（可停靠）：层级文件树视图，支持多选和右键菜单
+- **过滤面板**（可停靠）：按名称、大小、时间、类型进行高级过滤
+- **状态栏**（底部）：当前路径、选中路径、过滤状态和状态消息
+- **菜单栏**：文件、视图、Go、书签、Recent、帮助菜单
 
 ### 可视化指南
 
@@ -1140,6 +1218,7 @@ pyfsn 窗口由以下部分组成：
 | **文件** | 平台上的方块 | 文件 |
 | **方块高度** | 与文件大小成比例 | 文件越大 = 方块越高 |
 | **方块颜色** | 按文件年龄（SGI fsn 风格） | 绿=24小时内，青=7天内，黄=30天内，橙=365天内，棕≥365天 |
+| **类型颜色** | 按文件类别 | 图像=粉色，视频=红色，音频=橙色，文档=黄色，代码=绿色，压缩包=棕色，数据=蓝色，其他=灰色 |
 | **连线颜色** | 白色线条 | 父子目录连接 |
 | **黄色辉光** | 选中项目 | 当前选中的文件/文件夹 |
 | **高亮连线** | 黄色粗线 | 与选中节点的连接 |
@@ -1175,7 +1254,10 @@ pyfsn 窗口由以下部分组成：
 | 操作 | 功能 |
 |------|------|
 | **点击** | 选择并在 3D 视图中定位 |
+| **Ctrl/Cmd+点击** | 多选添加/移除 |
+| **Shift+点击** | 范围选择 |
 | **双击** | 打开文件 / 进入目录 |
+| **右键** | 上下文菜单（在 3D 中显示 / 打开 / 重命名 / 移入废纸篓） |
 
 #### 键盘控制 - 飞行模式（飞行模式激活时）
 | 按键 | 功能 |
@@ -1204,11 +1286,13 @@ pyfsn 窗口由以下部分组成：
 
 搜索栏提供带视觉聚光灯效果的即时文件/文件夹搜索：
 
-1. **激活**：点击搜索栏
+1. **激活**：点击搜索栏，或按 `Ctrl+K` / `/`
 2. **输入**：输入搜索词（不区分大小写）
 3. **视觉反馈**：匹配节点以完全不透明度高亮，不匹配节点变暗
-4. **导航**：使用方向键或点击文件树中的结果
+4. **导航**：使用 ◀/▶ 按钮、`↑`/`↓` 或 `Shift+Enter` / `Enter` 在结果间移动
 5. **跳转**：按 Enter 键导航到选中的结果
+
+右侧命中计数器显示当前/总匹配数（例如 `2 / 10`）。
 
 **聚光灯可视化：**
 - 匹配节点以 100% 不透明度和原始颜色显示
@@ -1227,10 +1311,23 @@ pyfsn 窗口由以下部分组成：
 层级文件树提供：
 
 - **结构视图**：目录的传统树形视图
-- **列**：名称、大小、类型
+- **列**：名称、大小、修改日期、类型
+- **人可读大小**：自动格式化为 `1.5 GB` 等
 - **点击导航**：点击任意项目跳转到 3D 视图中的位置
-- **同步**：选择与 3D 视图同步
+- **多选**：支持 Ctrl/Cmd 或 Shift 多选
+- **右键菜单**：在 3D 中显示、打开、重命名、移入废纸篓
+- **双向同步**：与 3D 视图的选择相互同步
 - **可停靠**：可以移动或调整大小
+
+### 过滤面板
+
+按名称、大小、时间、类型提供高级过滤：
+
+- **大小输入**：支持人可读单位，如 `1024`、`10MB`、`1.5GB`
+- **时间预设**：24 小时 / 7 天 / 30 天 / 90 天 / 1 年
+- **类型过滤**：切换文件、目录和符号链接的显示
+- **Reset to Defaults**：快速恢复默认过滤条件
+- **持续指示器**：过滤激活时状态栏显示图标
 
 ### 节点标签
 
@@ -1292,7 +1389,8 @@ pyfsn/
 │       └── controller.py    # 主应用程序控制器
 ├── tests/
 │   ├── test_spotlight.py    # 聚光灯功能单元测试
-│   └── test_spotlight_demo.py # 聚光灯交互演示
+│   ├── test_spotlight_demo.py # 聚光灯交互演示
+│   └── test_ux_improvements.py # UX 改进单元测试
 └── docs/
     ├── API.md               # API 文档
     ├── SPEC.md              # 技术规格说明（日语）
@@ -1375,11 +1473,17 @@ pyfsn 遵循模型-视图-控制器（MVC）模式：
 │ 应用程序（菜单快捷键）                                    │
 ├─────────────────────────────────────────────────────────┤
 │ Ctrl+O      打开目录                                     │
+│ Ctrl+K / /  聚焦搜索栏                                   │
 │ Ctrl+T      切换文件树                                   │
 │ Ctrl+F      切换过滤面板                                  │
 │ Ctrl+L      切换标签                                     │
+│ Ctrl+H      切换隐藏文件                                  │
+│ Ctrl+M      切换小地图                                    │
+│ F1          键盘快捷键速查表                              │
 │ F5          刷新                                         │
 │ Ctrl+Q      退出                                         │
+│ Alt+←/→   后退 / 前进                                   │
+│ Alt+↑      父目录                                        │
 ├─────────────────────────────────────────────────────────┤
 │ 飞行模式（激活时）                                        │
 ├─────────────────────────────────────────────────────────┤

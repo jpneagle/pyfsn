@@ -17,7 +17,13 @@ from PyQt6.QtWidgets import QMessageBox, QMenu, QApplication
 from pyfsn.model.node import Node, NodeType
 from pyfsn.model.scanner import Scanner, ScannerWorker, ScanProgress
 from pyfsn.errors import FileOpenError
-from pyfsn.layout.engine import LayoutEngine, LayoutConfig, LayoutResult
+from pyfsn.layout.engine import (
+    DirHeightMode,
+    HeightMode,
+    LayoutConfig,
+    LayoutEngine,
+    LayoutResult,
+)
 from pyfsn.view.renderer import Renderer, ColorMode
 from pyfsn.view.camera import CameraMode
 from pyfsn.view.main_window import MainWindow
@@ -46,6 +52,10 @@ class Controller(QObject):
         root_path: Path,
         show_hidden: bool = False,
         lazy_depth: int = 2,
+        layout_config: LayoutConfig | None = None,
+        height_mode: HeightMode | None = None,
+        dir_height_mode: DirHeightMode | None = None,
+        landscape: str | None = None,
     ) -> None:
         """Initialize controller.
 
@@ -53,6 +63,10 @@ class Controller(QObject):
             root_path: Root directory path to visualize
             show_hidden: Whether to include hidden files and directories
             lazy_depth: Depth at which the scanner starts lazy loading
+            layout_config: Layout configuration (defaults if None)
+            height_mode: Height mode override (persisted choice if None)
+            dir_height_mode: Directory height mode override (persisted choice if None)
+            landscape: Landscape name override (persisted choice if None)
         """
         super().__init__()
 
@@ -86,14 +100,35 @@ class Controller(QObject):
         self._input_handler = InputHandler(self._camera, self._renderer)
         self._renderer.set_input_handler(self._input_handler)
 
-        # Create layout engine
-        self._layout_config = LayoutConfig(
-            node_size=1.0,
-            dir_size=2.0,
-            spacing=0.5,
-            max_depth=5,
-        )
+        # Create layout engine. Height modes come from the command line when
+        # given, otherwise from the persisted View menu choice.
+        self._layout_config = layout_config or LayoutConfig()
+        if height_mode is None:
+            height_mode = self._enum_setting(
+                "view/height_mode", HeightMode, self._layout_config.height_mode
+            )
+        if dir_height_mode is None:
+            dir_height_mode = self._enum_setting(
+                "view/dir_height_mode", DirHeightMode, self._layout_config.dir_height_mode
+            )
+        self._layout_config.height_mode = height_mode
+        self._layout_config.dir_height_mode = dir_height_mode
         self._layout_engine = LayoutEngine(self._layout_config)
+        self._window.set_height_mode_checked(height_mode.value)
+        self._window.set_dir_height_mode_checked(dir_height_mode.value)
+
+        # Sky/ground colours
+        if landscape is None:
+            landscape = self._settings.value("view/landscape", "grass", type=str)
+        if not self._renderer.set_landscape(landscape):
+            landscape = "grass"
+        self._window.set_landscape_checked(landscape)
+
+        # Directories the user expanded by visiting them; replayed after a
+        # rescan so the landscape does not collapse on refresh
+        self._expanded_paths: set[str] = set()
+        # Keep the camera where it is when the next scan completes (refresh)
+        self._keep_camera_on_scan = False
 
         # Create scanner
         self._scanner = Scanner(lazy_depth=lazy_depth, show_hidden=self._show_hidden)
@@ -103,6 +138,10 @@ class Controller(QObject):
         self._nodes: dict[str, Node] = {}
         self._positions: dict[str, object] = {}
         self._layout_result: LayoutResult | None = None
+
+        # (positions dict, names, anchor points) of the file labels; rebuilt
+        # whenever the renderer is given a new positions dict
+        self._file_label_cache = None
 
         # Selection state
         self._selected_nodes: set[Node] = set()
@@ -204,6 +243,12 @@ class Controller(QObject):
 
         # Color mode selection
         self._window.color_mode_selected.connect(self._on_color_mode_selected)
+
+        # Height modes and view presets (fsn Display menu / control panel)
+        self._window.height_mode_selected.connect(self._on_height_mode_selected)
+        self._window.dir_height_mode_selected.connect(self._on_dir_height_mode_selected)
+        self._window.view_preset_requested.connect(self._on_view_preset_requested)
+        self._window.landscape_selected.connect(self._on_landscape_selected)
 
         # Bookmarks
         self._window.bookmark_add_requested.connect(
@@ -321,6 +366,11 @@ class Controller(QObject):
         Args:
             progress: ScanProgress object with current status
         """
+        # The worker's final "complete" tick carries no information and would
+        # overwrite the "Loaded N items" message
+        if progress.is_complete:
+            return
+
         # Create concise message from progress info
         current_name = progress.current_path.name or str(progress.current_path)
         message = f"Scanning {current_name}... ({progress.nodes_found} nodes)"
@@ -347,12 +397,18 @@ class Controller(QObject):
         for descendant in root.get_all_descendants():
             self._nodes[str(descendant.path)] = descendant
 
+        # Re-open the directories the user had expanded before this scan
+        self._replay_expanded_paths()
+
         # Calculate layout
         self._calculate_layout()
 
         # Position camera to view the scene before loading it, so the
         # renderer picks up the final camera state
-        self._reset_camera_to_scene()
+        if self._keep_camera_on_scan:
+            self._keep_camera_on_scan = False
+        else:
+            self._reset_camera_to_scene()
 
         # Load into renderer
         self._load_scene()
@@ -413,41 +469,277 @@ class Controller(QObject):
         self.scene_loaded.emit(len(self._nodes))
 
     def _reset_camera_to_scene(self) -> None:
-        """Reset camera to view the entire scene."""
+        """Move the camera to the front view: the root and its first row.
+
+        Like fsn's "reset"/"front view": a low viewpoint in front of the root
+        looking into the landscape, rather than a fit of the whole tree
+        (which would make everything tiny on a wide file system).
+        """
+        import math
+        import numpy as np
+
+        if self._layout_result is None or self._root_node is None:
+            return
+
+        root_pos = self._positions.get(str(self._root_node.path))
+        if root_pos is None:
+            return
+
+        # Width worth framing: the root and its row of children, capped so a
+        # directory with hundreds of children does not push the camera away
+        slot = self._layout_result.slot_widths.get(str(self._root_node.path), root_pos.width)
+        frame_width = max(root_pos.width + 6.0, min(slot, 70.0))
+
+        root_cx, _, root_cz = root_pos.center
+        target = np.array(
+            [root_cx, 0.0, root_cz - self._layout_config.level_gap],
+            dtype=np.float32,
+        )
+
+        fov_rad = math.radians(self._camera.state.fov)
+        distance = max((frame_width / 2.0) / math.tan(fov_rad / 2.0) * 0.8, 14.0)
+
+        # Low enough above the ground that the horizon and sky are in view
+        elevation = math.radians(17.0)
+        camera_pos = target + np.array(
+            [0.0, distance * math.sin(elevation), distance * math.cos(elevation)],
+            dtype=np.float32,
+        )
+        self._camera.set_position_target(camera_pos, target)
+
+    def _birds_eye_view(self) -> None:
+        """Look at the whole landscape from high above (fsn "birds eye")."""
         import math
         import numpy as np
 
         if self._layout_result is None or self._layout_result.bounds is None:
             return
 
-        bounds = self._layout_result.bounds
-        scene_center = np.array(bounds.position.center, dtype=np.float32)
-
-        # Half-extents of the scene footprint on the XZ plane
-        half_w = bounds.position.width / 2.0
-        half_d = bounds.position.depth / 2.0
-        half_extent = max(half_w, half_d)
-
-        # Distance needed so the scene fits within the camera's horizontal FOV
+        bounds = self._layout_result.bounds.position
+        center = np.array(bounds.center, dtype=np.float32)
+        center[1] = 0.0
+        half_extent = max(bounds.width, bounds.depth) / 2.0
         fov_rad = math.radians(self._camera.state.fov)
-        fit_distance = (half_extent / math.tan(fov_rad / 2.0)) * 1.2  # 20% margin
-        fit_distance = max(fit_distance, 5.0)  # minimum distance
+        distance = max(half_extent / math.tan(fov_rad / 2.0) * 1.15, 20.0)
 
-        # Camera at ~45° elevation angle above scene center, looking straight at it
-        # sin(45°)=cos(45°)=√2/2 ≈ 0.707
-        camera_pos = np.array([
-            scene_center[0],
-            scene_center[1] + fit_distance * 0.707,
-            scene_center[2] + fit_distance * 0.707,
-        ], dtype=np.float32)
+        # Nearly straight down, keeping "up the screen" = deeper into the tree
+        elevation = math.radians(80.0)
+        camera_pos = center + np.array(
+            [0.0, distance * math.sin(elevation), distance * math.cos(elevation)],
+            dtype=np.float32,
+        )
+        self._camera.max_orbit_distance = max(self._camera.max_orbit_distance, distance * 1.2)
+        self._camera.set_position_target(camera_pos, center)
 
-        # Update camera state using public API
-        self._camera.set_position_target(camera_pos, scene_center)
+    def _on_view_preset_requested(self, preset: str) -> None:
+        """Handle View > Reset View / Bird's Eye View."""
+        if hasattr(self._renderer, "_is_animating"):
+            self._renderer._is_animating = False
+        if self._camera.mode != CameraMode.ORBIT:
+            self._camera.set_mode(CameraMode.ORBIT)
+            self._on_camera_mode_changed(CameraMode.ORBIT)
+        if preset == "birds_eye":
+            self._birds_eye_view()
+        else:
+            self._reset_camera_to_scene()
+
+    # Landscape expansion (single persistent landscape, like fsn)
+
+    def _enum_setting(self, key: str, enum_cls, default):
+        """Read an enum-valued preference, falling back on unknown values."""
+        raw = self._settings.value(key, default.value, type=str)
+        try:
+            return enum_cls(raw)
+        except ValueError:
+            return default
+
+    def _load_directory_children(self, node: Node) -> bool:
+        """Scan a not-yet-loaded directory and register its children.
+
+        Returns:
+            True if the directory was loaded by this call
+        """
+        if not node.is_directory or node.is_loaded:
+            return False
+
+        try:
+            self._scanner.load_children(node)
+        except OSError as e:
+            # Leave it marked as loaded-but-empty so we do not retry on every click
+            node.is_loaded = True
+            self.scan_progress.emit(f"Cannot read {node.name}: {e}")
+
+        for descendant in node.get_all_descendants():
+            self._nodes[str(descendant.path)] = descendant
+
+        # The layout only draws max_depth levels below the root; make sure an
+        # expansion the user asked for is never silently cut off
+        needed_depth = node.depth + 1
+        if needed_depth > self._layout_config.max_depth:
+            self._layout_config.max_depth = needed_depth
+        return True
+
+    def _replay_expanded_paths(self) -> None:
+        """Re-load directories that were expanded before a rescan."""
+        if not self._expanded_paths:
+            return
+        # Parents first: a child can only be found once its parent is loaded
+        for path_str in sorted(self._expanded_paths, key=len):
+            node = self._nodes.get(path_str)
+            if node is not None:
+                self._load_directory_children(node)
+
+    def _expand_directory(self, node: Node) -> bool:
+        """Load a directory on demand and grow the landscape around it.
+
+        The camera is carried along with the directory, so the pedestal the
+        user clicked stays where it was on screen while its neighbours move
+        aside to make room.
+
+        Returns:
+            True if the landscape changed
+        """
+        if not self._load_directory_children(node):
+            return False
+
+        self._expanded_paths.add(str(node.path))
+        self._rebuild_scene(anchor=node)
+        self._window.file_tree.add_children(node)
+        self.scan_progress.emit(
+            f"Loaded {node.name}: {len(node.children)} items ({len(self._nodes)} total)"
+        )
+        return True
+
+    def _rebuild_scene(self, anchor: Node | None = None) -> None:
+        """Recompute the layout and reload the scene without rescanning.
+
+        Args:
+            anchor: Node the camera should stay attached to while everything
+                else is rearranged (None keeps the camera where it is)
+        """
+        if self._root_node is None:
+            return
+
+        import numpy as np
+
+        anchor_path = str(anchor.path) if anchor is not None else None
+        old_pos = self._positions.get(anchor_path) if anchor_path else None
+        old_center = np.array(old_pos.center, dtype=np.float32) if old_pos else None
+
+        self._calculate_layout()
+
+        if old_center is not None:
+            new_pos = self._positions.get(anchor_path)
+            if new_pos is not None:
+                delta = np.array(new_pos.center, dtype=np.float32) - old_center
+                # Heights can change with the scene-wide scale; follow on the ground only
+                delta[1] = 0.0
+                self._camera.translate(delta)
+
+        if self._active_filters:
+            # Re-filters the node set and loads the filtered scene
+            self._apply_filters(self._active_filters)
+            self._update_mini_map()
+        else:
+            self._load_scene()
+            self._input_handler.set_scene_data(self._nodes, self._positions)
+
+    def _zoom_to_directory(self, node: Node, close_up: bool = False) -> None:
+        """Fly the camera to a directory."""
+        if not hasattr(self._renderer, 'snap_camera_to_node'):
+            return
+        if close_up:
+            position = self._positions.get(str(node.path))
+            size = max(position.width, position.depth) if position else 2.0
+            self._renderer.snap_camera_to_node(id(node), distance=size * 1.3 + 4.0)
+        else:
+            self._renderer.snap_camera_to_node(id(node))
+
+    def _prune_directory(self, node: Node) -> None:
+        """Hide the contents of a directory (fsn "Prune")."""
+        self._layout_engine.pruned_paths.add(str(node.path))
+        self._rebuild_scene(anchor=node)
+        self.scan_progress.emit(f"Pruned {node.name}")
+
+    def _unprune_directory(self, node: Node) -> None:
+        """Show the contents of a pruned directory again."""
+        self._layout_engine.pruned_paths.discard(str(node.path))
+        self._rebuild_scene(anchor=node)
+        self.scan_progress.emit(f"Restored {node.name}")
+
+    def _unprune_all(self) -> None:
+        """Show the contents of all pruned directories again."""
+        self._layout_engine.pruned_paths.clear()
+        self._rebuild_scene()
+        self.scan_progress.emit("Restored all pruned directories")
+
+    def _on_landscape_selected(self, key: str) -> None:
+        """Switch the sky/ground colours and persist the choice."""
+        if not self._renderer.set_landscape(key):
+            return
+        self._settings.setValue("view/landscape", key)
+        self._window.set_landscape_checked(key)
+        self.scan_progress.emit(f"Landscape: {key}")
+
+    def _on_height_mode_selected(self, mode: str) -> None:
+        """Switch how sizes map to heights and persist the choice."""
+        try:
+            self._layout_config.height_mode = HeightMode(mode)
+        except ValueError:
+            return
+        self._settings.setValue("view/height_mode", mode)
+        self._window.set_height_mode_checked(mode)
+        self._rebuild_scene()
+        self.scan_progress.emit(f"Height: {mode}")
+
+    def _on_dir_height_mode_selected(self, mode: str) -> None:
+        """Switch what pedestal height stands for and persist the choice."""
+        try:
+            self._layout_config.dir_height_mode = DirHeightMode(mode)
+        except ValueError:
+            return
+        self._settings.setValue("view/dir_height_mode", mode)
+        self._window.set_dir_height_mode_checked(mode)
+        self._rebuild_scene()
+        self.scan_progress.emit(f"Directory height: {mode}")
 
     # Text overlay (labels)
 
+    # File names are only drawn near the camera: far away they are unreadable
+    # and pile up on top of each other
+    FILE_LABEL_DISTANCE = 45.0
+    FILE_LABEL_LIMIT = 150
+
+    def _file_label_arrays(self):
+        """Names and anchor points (top centre) of all file boxes in the scene."""
+        import numpy as np
+
+        positions = self._renderer._positions
+        if self._file_label_cache is not None and self._file_label_cache[0] is positions:
+            return self._file_label_cache[1], self._file_label_cache[2]
+
+        nodes = self._renderer._nodes
+        names: list[str] = []
+        points: list[tuple[float, float, float]] = []
+        for path_str, position in positions.items():
+            node = nodes.get(path_str)
+            if node is None or node.is_directory:
+                continue
+            names.append(node.name)
+            points.append((
+                position.x + position.width / 2,
+                position.y + position.height,
+                position.z + position.depth / 2,
+            ))
+        array = np.array(points, dtype=np.float32).reshape(-1, 3)
+        self._file_label_cache = (positions, names, array)
+        return names, array
+
     def _update_text_overlay(self) -> None:
-        """Update the text overlay with node labels."""
+        """Update the text overlay with the names of the files near the camera."""
+        import math
+        import numpy as np
+
         if not self._window.show_labels or self._layout_result is None:
             return
 
@@ -455,42 +747,62 @@ class Controller(QObject):
         if overlay is None:
             return
 
-        # Collect labels for visible nodes
-        labels = []
-        focused_label = None
+        names, points = self._file_label_arrays()
+        labels: list[tuple[str, int, int]] = []
+
+        if len(names):
+            state = self._camera.state
+            forward = state.target - state.position
+            norm = float(np.linalg.norm(forward))
+            width, height = self._renderer.width(), self._renderer.height()
+            if norm > 1e-6 and width > 0 and height > 0:
+                forward = forward / norm
+                right = np.cross(forward, state.up)
+                right_norm = float(np.linalg.norm(right))
+                if right_norm > 1e-6:
+                    right = right / right_norm
+                    up = np.cross(right, forward)
+
+                    # Project every anchor at once (same maths as
+                    # Renderer.get_screen_position)
+                    to_points = points - state.position
+                    view_z = to_points @ forward
+                    distance = np.linalg.norm(to_points, axis=1)
+                    candidates = np.nonzero(
+                        (view_z > 0.1) & (distance < self.FILE_LABEL_DISTANCE)
+                    )[0]
+                    if candidates.size:
+                        scale = 1.0 / math.tan(math.radians(state.fov) / 2.0)
+                        aspect = width / height
+                        z = view_z[candidates]
+                        ndc_x = (to_points[candidates] @ right) / z * (scale / aspect)
+                        ndc_y = (to_points[candidates] @ up) / z * scale
+                        on_screen = (np.abs(ndc_x) <= 1.0) & (np.abs(ndc_y) <= 1.0)
+                        candidates = candidates[on_screen]
+                        ndc_x, ndc_y = ndc_x[on_screen], ndc_y[on_screen]
+                        # Nearest first, so the cap drops the farthest names
+                        order = np.argsort(distance[candidates])[: self.FILE_LABEL_LIMIT]
+                        for i in order:
+                            labels.append((
+                                names[int(candidates[i])],
+                                int((ndc_x[i] + 1.0) * 0.5 * width),
+                                int((1.0 - ndc_y[i]) * 0.5 * height),
+                            ))
+
+        # The focused node keeps its highlighted name at any distance
         focused_pos = None
-
-        for path_str, position in self._positions.items():
-            if path_str not in self._nodes:
-                continue
-
-            node = self._nodes[path_str]
-
-            # Get screen position
-            center = position.center
-            import numpy as np
-            world_pos = np.array([center[0], center[1], center[2]], dtype=np.float32)
-            screen_pos = self._renderer.get_screen_position(world_pos)
-
-            if screen_pos is None:
-                continue  # Behind camera or off-screen
-
-            x, y = screen_pos
-
-            # Check if this is the focused node
-            if self._focused_node and node == self._focused_node:
-                focused_label = node.name
-                focused_pos = screen_pos
-            elif node.is_file:
-                # Show only file names (directories shown on ground as handwritten style)
-                labels.append((node.name, x, y))
-
-        # Update overlay
-        if focused_label and focused_pos:
-            overlay.set_focused_label(focused_label, focused_pos[0], focused_pos[1])
+        if self._focused_node is not None:
+            position = self._renderer._positions.get(str(self._focused_node.path))
+            if position is not None:
+                focused_pos = self._renderer.get_screen_position(
+                    np.array(position.center, dtype=np.float32)
+                )
+        if focused_pos is not None:
+            name = self._focused_node.name
+            labels = [label for label in labels if label[0] != name]
+            overlay.set_focused_label(name, focused_pos[0], focused_pos[1])
         else:
             overlay.set_focused_label(None)
-
         overlay.set_labels(labels)
 
     # Search
@@ -773,18 +1085,22 @@ class Controller(QObject):
         self.node_selected.emit(node)
         self._sound.play_click()
 
-        # Snap camera to selected node (single click only)
-        # On double-click to a directory, _reset_camera_to_scene() handles positioning
-        if not is_double_click and hasattr(self._renderer, 'snap_camera_to_node'):
+        if node.is_directory:
+            # fsn: selecting a directory zooms to it. A directory that has not
+            # been scanned yet is loaded first and the landscape grows in
+            # place; the scene reload must come before the camera animation,
+            # because loading a layout cancels a running animation.
+            self._expand_directory(node)
+            if is_double_click:
+                # Close-up of the directory (fsn "warps" here; pyfsn stays in
+                # the landscape). Re-rooting is available from the context menu.
+                self._sound.play_navigate()
+            self._zoom_to_directory(node, close_up=is_double_click)
+        elif not is_double_click and hasattr(self._renderer, 'snap_camera_to_node'):
             self._renderer.snap_camera_to_node(id(node))
 
         if is_double_click:
-            if node.is_directory:
-                # Navigate to directory (change current directory)
-                self._sound.play_navigate()
-                self._change_directory(node.path)
-
-            elif node.is_file:
+            if node.is_file:
                 # Open file with default application
                 try:
                     self._open_file(node)
@@ -866,6 +1182,10 @@ class Controller(QObject):
         self._focused_node = node
         self._selected_nodes.clear()
         self._selected_nodes.add(node)
+
+        # Load the directory on demand, like a click in the 3D view
+        if node.is_directory:
+            self._expand_directory(node)
 
         # Update visual selection
         self._update_selection_visual()
@@ -1073,8 +1393,14 @@ class Controller(QObject):
             mode_menu = menu.addMenu("Camera Mode")
             mode_menu.addAction("Orbit", lambda: self.set_camera_mode(CameraMode.ORBIT))
             mode_menu.addAction("Fly", lambda: self.set_camera_mode(CameraMode.FLY))
+            if self._layout_engine.pruned_paths:
+                menu.addAction("Restore All Pruned", self._unprune_all)
         elif node.is_directory:
-            menu.addAction("Enter Directory", lambda: self._change_directory(node.path))
+            menu.addAction("Set as Root", lambda: self._change_directory(node.path))
+            if str(node.path) in self._layout_engine.pruned_paths:
+                menu.addAction("Restore (Unprune)", lambda: self._unprune_directory(node))
+            elif node is not self._root_node:
+                menu.addAction("Prune", lambda: self._prune_directory(node))
             menu.addSeparator()
             menu.addAction("Copy Path", lambda: self._copy_path(node))
             menu.addAction("Reveal in Finder", lambda: self._reveal_in_finder(node))
@@ -1243,6 +1569,8 @@ class Controller(QObject):
         """Refresh the current view."""
         if self._root_node:
             self._root_node.invalidate_children()
+            # Same landscape, same viewpoint: only the contents are re-read
+            self._keep_camera_on_scan = True
             self._start_scan()
 
     def navigate_to(self, path: Path) -> None:

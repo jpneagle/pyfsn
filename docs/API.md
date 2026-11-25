@@ -214,7 +214,14 @@ position = result.positions[str(node.path)]
 - `dir_size: float` - Base size for directory nodes
 - `spacing: float` - Spacing between nodes
 - `max_depth: int` - Maximum depth to visualize
-- `placement_strategy` - Strategy for placing subdirectories
+- `sibling_gap: float` / `level_gap: float` - Gap between neighbouring sub-trees / between rows
+- `height_mode: HeightMode` - `NONE`, `LINEAR`, `EXAGGERATED` (size ** `height_power`, default) or `LOG`
+- `dir_height_mode: DirHeightMode` - `FLAT`, `FILES_ONLY` (default) or `INCLUDING_CHILDREN`
+- `max_file_height: float` / `max_dir_height: float` - Height of the largest file / pedestal in the scene
+
+**Result:** a directory's `Position` is its pedestal (`y = 0`, `height` = pedestal height); a file's
+`Position` already stands on top of its pedestal. `result.slot_widths` gives the width of the ground
+strip owned by each directory's sub-tree, and `engine.pruned_paths` hides the contents of directories.
 
 ## Performance Optimization
 
@@ -282,18 +289,11 @@ monitor.metrics_updated.connect(lambda metrics: print(f"FPS: {metrics.fps}"))
 
 ## Extending pyfsn
 
-### Custom Layout Strategies
+### Custom Layouts
 
-```python
-from pyfsn.layout import PlacementStrategy
-
-class CustomStrategy:
-    def calculate_positions(nodes, parent_pos):
-        # Your custom layout logic
-        return positions
-
-# Configure via LayoutConfig(placement_strategy=...) and/or extend LayoutEngine.
-```
+The layout is a two-pass tree layout (measure bottom-up, place top-down). To change it,
+subclass `LayoutEngine` and override `_measure()` (pedestal footprint and sub-tree width)
+and/or `_place()` (positions), then pass the engine's `LayoutConfig` to `Controller`.
 
 ### Custom Node Colors
 

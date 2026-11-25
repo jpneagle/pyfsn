@@ -13,8 +13,8 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 
 from pyfsn.controller.controller import Controller
-from pyfsn.layout.engine import LayoutConfig, LayoutEngine, PlacementStrategy
-from pyfsn.view.renderer import ColorMode
+from pyfsn.layout.engine import DirHeightMode, HeightMode, LayoutConfig
+from pyfsn.view.renderer import LANDSCAPES, ColorMode
 
 
 def parse_args() -> argparse.Namespace:
@@ -54,6 +54,26 @@ def parse_args() -> argparse.Namespace:
         default=2,
         metavar="N",
         help="Depth at which to start lazy loading (default: 2)",
+    )
+    parser.add_argument(
+        "--height",
+        choices=[m.value for m in HeightMode],
+        default=None,
+        help="How size maps to height: none, linear, exaggerated (sqrt, fsn style), "
+        "log (default: last used or exaggerated)",
+    )
+    parser.add_argument(
+        "--dir-height",
+        choices=[m.value for m in DirHeightMode],
+        default=None,
+        help="What pedestal height stands for: flat, files (files directly inside), "
+        "children (including sub-directories) (default: last used or files)",
+    )
+    parser.add_argument(
+        "--landscape",
+        choices=list(LANDSCAPES),
+        default=None,
+        help="Sky and ground colours (default: last used or grass)",
     )
     parser.add_argument(
         "--show-hidden",
@@ -165,32 +185,20 @@ def main() -> int:
     fmt.setSamples(args.msaa)
     QSurfaceFormat.setDefaultFormat(fmt)
 
-    # Create layout config with CLI options
-    layout_config = LayoutConfig(
-        node_size=1.0,
-        dir_size=2.0,
-        spacing=0.5,
-        padding=0.2,
-        max_depth=args.max_depth,
-        placement_strategy=PlacementStrategy.GRID,
-        grid_size=3.0,
-        connection_width=0.1,
-        use_size_height=True,
-        min_height=0.2,
-        max_height=5.0,
-        height_scale=0.3,
-    )
+    # Create layout config with CLI options. Height modes left unset on the
+    # command line fall back to the persisted View menu choice.
+    layout_config = LayoutConfig(max_depth=args.max_depth)
 
     # Create and start controller
     controller = Controller(
         root_path,
         show_hidden=args.show_hidden,
         lazy_depth=args.lazy_depth,
+        layout_config=layout_config,
+        height_mode=HeightMode(args.height) if args.height else None,
+        dir_height_mode=DirHeightMode(args.dir_height) if args.dir_height else None,
+        landscape=args.landscape,
     )
-
-    # Apply CLI configuration
-    controller._layout_config = layout_config
-    controller._layout_engine = LayoutEngine(layout_config)
 
     # Set color mode
     color_mode = ColorMode.TYPE if args.color_mode == "type" else ColorMode.AGE

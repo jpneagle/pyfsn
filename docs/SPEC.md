@@ -183,7 +183,7 @@ pyfsn/
 |------|------|------|
 | **ディレクトリ** | 浮遊プラットフォーム | ファイル群を載せる台座、サブディレクトリの親 |
 | **ファイル** | 直方体（キューブ） | プラットフォーム上に配置されるファイル |
-| **高さ** | ファイルはサイズ対数スケール、プラットフォームは薄い板 | `LayoutEngine` が \(min=0.2, max=5.0\) の範囲で高さを算出。プラットフォーム厚みは `Renderer` 側で 0.2 固定 |
+| **高さ** | ファイル・台座ともサイズに応じた高さ | `LayoutEngine` が算出（`HeightMode`: none / linear / exaggerated=平方根 / log）。台座は既定で直下ファイルの合計サイズ（`DirHeightMode`: flat / files / children）。最大はファイル 4.0、台座 2.0 |
 | **色** | 状態/種別/年齢に依存 | 既定は「更新時刻（年齢）に基づく色」＋選択/フォーカス色 |
 | **階層接続** | ワイヤー（白線） | 親プラットフォームと子プラットフォームを接続 |
 | **強調表示** | コーンスポットライト | 選択されたアイテム上空からの照明効果 |
@@ -194,6 +194,8 @@ pyfsn/
 | タイプ | 色 (RGBA) |
 |--------|-----------|
 | ディレクトリ（プラットフォーム） | (0.2, 0.6, 1.0, 1.0) - 明るい青 |
+| 未読み込みディレクトリ | (0.32, 0.40, 0.55, 1.0) - 灰青（クリックで読み込み） |
+| 枝刈りされたディレクトリ | (0.45, 0.35, 0.50, 1.0) - 紫灰 |
 | ファイル（既定） | 年齢ベース（例: 24h未満=緑, 1週未満=シアン, 1ヶ月未満=黄, 1年未満=橙, それ以上=茶） |
 | シンボリックリンク | (0.3, 1.0, 0.3, 1.0) - 緑 |
 | 選択 | (1.0, 1.0, 0.3, 1.0) - 黄 |
@@ -203,35 +205,37 @@ pyfsn/
 
 ### 4.2 レイアウトアルゴリズム
 
-#### 4.2.1 FSNスタイル 後退レイアウト (Receding Layout)
+#### 4.2.1 FSNスタイル ツリーレイアウト
 
-サブディレクトリは**負のZ方向（画面奥）**に配置され、階層が深くなるほど遠ざかるFSN特有のビジュアルを再現。
+サブディレクトリは親の**奥（負のZ方向）に横一列**で並ぶ。各ディレクトリは自分の部分木全体が収まる幅の「帯」を地面に確保するため、台座同士は重ならない。計算は2パス:
+
+1. **measure（ボトムアップ）**: ファイル数から台座の大きさを決め、子の帯の合計から部分木の幅を求める
+2. **place（トップダウン）**: 各ディレクトリを自分の帯の中央に置く。兄弟ディレクトリは親のすぐ奥で前縁（Max Z）が揃う
 
 ```
 カメラ (Z+)
     ↓
-[Root Platform]  ← Z = 0付近
-      │ (Wire)
-      ▼
-   [Child]       ← Z = -10付近
-      │
-      ▼
-  [Grandchild]   ← Z = -20付近
+          [Root]                 ← 階層0
+      ┌─────┴──────┬──────┐      ← ワイヤー（共通のバス）
+   [ A ]         [ B ]  [ C ]    ← 階層1（兄弟は前縁が揃う）
+  ┌──┴──┐
+[A1]  [A2]                       ← 階層2
 ```
 
-#### 4.2.2 動的プラットフォームサイジング
-
-プラットフォームサイズはファイル数から自動計算:
+#### 4.2.2 台座のサイズと高さ
 
 ```
-Grid_Cols = Ceil(Sqrt(ファイル数))
-Cell_Size = File_Width + Spacing
-Platform_Width = (Grid_Cols * Cell_Size) + (Padding * 2)
+Cols = Ceil(Sqrt(ファイル数 * 1.6))      # 奥行きより幅が広い
+Rows = Ceil(ファイル数 / Cols)
+Width = Max(dir_size, Cols * (node_size + spacing) + padding * 2)
+Depth = Max(dir_size, Rows * (node_size + spacing) + padding * 2)
 ```
+
+高さはシーン内の最大サイズを基準に `min + (max - min) * (size / max_size) ^ height_power` で求める（exaggerated は 0.5 乗）。
 
 #### 4.2.3 ワイヤー接続（エッジ接続）
 
-親プラットフォームの**背面エッジ**（Min Z）から子プラットフォームの**前面エッジ**（Max Z）にワイヤーを接続し、プラットフォームを貫通しない。
+親プラットフォームの**背面エッジ**（Min Z）から子プラットフォームの**前面エッジ**（Max Z）にワイヤーを接続し、プラットフォームを貫通しない。兄弟は前縁が揃うので折れ線の横棒が1本のバスになる。ディレクトリ名は台座の手前、ワイヤーの右側の地面に描く。
 
 #### 4.2.4 2Dデンドログラム (Overview)
 
@@ -246,12 +250,15 @@ Platform_Width = (Grid_Cols * Cell_Size) + (Padding * 2)
 | 左ドラッグ | カメラ回転（Orbitモード）/ 視点回転（Flyモード） |
 | 右ドラッグ | パン（Orbitモード）/ 視点回転（Flyモード） |
 | Shift+左ドラッグ | パン（macOSトラックパッド代替、Orbitモード） |
-| 中ドラッグ | パン（Orbitモード） |
+| 中ドラッグ / Alt+左ドラッグ | fsn 式の飛行。押した位置からの距離が速度になる（上下=前後、左右=横移動、Shift 併用で前進=降下・後退=上昇）。両モードで有効 |
 | ホイール | ズーム（Orbitモード） |
-| 左クリック | 3Dビューでノード選択（Ray-AABBピッキング） |
-| ダブルクリック | ディレクトリへフォーカス＋選択 |
+| 左クリック | ノードを選択してズーム（Ray-AABBピッキング）。未読み込みディレクトリはその場で読み込み、風景を再配置（カメラは対象に追従） |
+| ワイヤーを左クリック | ワイヤーの先のディレクトリを選択（選択済みなら親） |
+| ディレクトリをダブルクリック | ディレクトリへクローズアップ（再ルートはしない） |
+| 右クリック › Set as Root | そのディレクトリをルートにして再スキャン |
+| 右クリック › Prune / Restore | ディレクトリの中身を風景から隠す / 戻す |
 | ファイルをダブルクリック | ファイルをOSデフォルトアプリで開く |
-| **ファイルツリーでダブルクリック** | **ファイルを開く/ディレクトリを移動** |
+| **ファイルツリーでダブルクリック** | **ファイルを開く** |
 
 補足:
 - `Renderer` は Ray-AABB intersection（Slab method）による正確な3Dピッキングを実装済み。
@@ -454,72 +461,43 @@ class Position:
 #### 5.2.2 LayoutEngineクラス
 
 ```python
-class PlacementStrategy(Enum):
-    """サブディレクトリ配置戦略"""
-    GRID = "grid"            # グリッド配置
-    RADIAL = "radial"        # 放射配置
-    SPIRAL = "spiral"        # スパイラル配置
-    HEURISTIC = "heuristic"  # ヒューリスティック配置
+class HeightMode(Enum):
+    NONE = "none"; LINEAR = "linear"; EXAGGERATED = "exaggerated"; LOG = "log"
+
+class DirHeightMode(Enum):
+    FLAT = "flat"; FILES_ONLY = "files"; INCLUDING_CHILDREN = "children"
 
 @dataclass
 class LayoutConfig:
-    """レイアウトエンジン設定"""
-    node_size: float = 1.0                         # ファイルノードの基本サイズ
-    dir_size: float = 2.0                          # ディレクトリノードの基本サイズ
-    spacing: float = 0.5                           # ノード間のスペーシング
-    padding: float = 0.2                           # パディング
-    max_depth: int = 5                             # 最大探索深度
-    placement_strategy: PlacementStrategy = PlacementStrategy.GRID
-    grid_size: float = 3.0                         # グリッドサイズ
-    connection_width: float = 0.1                  # 接続線の幅
+    node_size: float = 1.0        # ファイルセルの大きさ
+    dir_size: float = 2.0         # 台座の最小サイズ
+    spacing: float = 0.5          # ファイルセル間の間隔
+    padding: float = 0.2          # ファイルグリッドと台座の縁の余白
+    max_depth: int = 5            # ルートから何階層まで配置するか（展開時に自動で広がる）
+    sibling_gap: float = 2.0      # 隣り合う部分木の間隔
+    level_gap: float = 5.0        # 階層間の間隔
+    height_mode: HeightMode = HeightMode.EXAGGERATED
+    dir_height_mode: DirHeightMode = DirHeightMode.FILES_ONLY
+    height_power: float = 0.5
+    min_height: float = 0.15
+    max_file_height: float = 4.0
+    min_dir_height: float = 0.15
+    max_dir_height: float = 2.0
 
 @dataclass
 class LayoutResult:
-    """レイアウト計算結果"""
-    positions: dict[str, Position]       # パス → 位置のマッピング
+    positions: dict[str, Position]       # ディレクトリ=台座（y=0）、ファイル=台座の上
     connections: list[tuple[str, str]]   # 接続（親子パスのペア）
-    bounds: BoundingBox | None = None    # 全体のバウンディングボックス
+    bounds: BoundingBox | None = None
+    slot_widths: dict[str, float]        # 各ディレクトリの部分木が占める帯の幅
+    pruned: set[str]                     # 枝刈りされたディレクトリ
 
 class LayoutEngine:
-    """3Dレイアウト計算エンジン"""
+    pruned_paths: set[str]               # 中身を隠すディレクトリ
 
-    def __init__(self, config: LayoutConfig | None = None): ...
-
-    def calculate_layout(self, root: Node) -> LayoutResult:
-        """ノードツリーからレイアウトを計算"""
-        ...
-
-    def _create_root_position(self, node: Node) -> Position: ...
-
-    def _position_children(
-        self, parent: Node, parent_pos: Position, result: LayoutResult
-    ) -> None: ...
-
-    def _position_directories(
-        self, directories: list[Node], parent_pos: Position, result: LayoutResult
-    ) -> None: ...
-
-    def _position_files(
-        self, files: list[Node], parent_pos: Position, result: LayoutResult
-    ) -> None: ...
-
-    def _calculate_grid_positions(
-        self, nodes: list[Node], parent_pos: Position, on_platform: bool = False
-    ) -> list[Position]: ...
-
-    def _calculate_radial_positions(
-        self, nodes: list[Node], parent_pos: Position
-    ) -> list[Position]: ...
-
-    def _calculate_spiral_positions(
-        self, nodes: list[Node], parent_pos: Position
-    ) -> list[Position]: ...
-
-    def _calculate_heuristic_positions(
-        self, nodes: list[Node], parent_pos: Position
-    ) -> list[Position]: ...
-
-    def _resolve_collision(self, pos: Position) -> Position: ...
+    def calculate_layout(self, root: Node) -> LayoutResult: ...
+    def _measure(self, node: Node, level: int) -> _Measure: ...   # ボトムアップ
+    def _place(self, measure, center_x, front_z, max_file_size, max_dir_size, result) -> None: ...  # トップダウン
 ```
 
 ### 5.3 View Layer
@@ -1415,28 +1393,7 @@ void main() {
 
 ### 9.2 設定拡張
 
-```python
-# 現状: 設定は主にコード内定数と `LayoutConfig` に集約されている。
-# 以下は「実装に存在する設定項目」の抜粋。
-
-@dataclass
-class LayoutConfig:
-    node_size: float = 1.0
-    dir_size: float = 2.0
-    spacing: float = 0.5
-    padding: float = 0.2
-    max_depth: int = 5
-    placement_strategy: PlacementStrategy = PlacementStrategy.GRID
-    grid_size: float = 3.0
-    connection_width: float = 0.1
-    use_size_height: bool = True
-    min_height: float = 0.2
-    max_height: float = 5.0
-    height_scale: float = 0.3
-
-# カメラ/描画の細かな調整値は `Camera` / `Renderer` の内部定数として保持されている
-# 例: _movement_speed, _rotation_speed, _zoom_speed, _damping, 色定義, スポットライト高さ/半径 など。
-```
+設定は `LayoutConfig`（5.2.2 参照）と、`Camera` / `Renderer` の内部定数（移動速度、色定義、スポットライトの高さ/半径など）に集約されている。高さモード・ランドスケープは View メニューから変更でき、QSettings に保存される。
 
 ---
 
@@ -1467,7 +1424,7 @@ class LayoutConfig:
 
 ### ✅ 完全動作
 - **3D可視化**: FSN風の浮遊プラットフォーム＋キューブ＋ワイヤー
-- **後退レイアウト**: 子ディレクトリは負のZ方向に配置
+- **ツリーレイアウト**: 子ディレクトリは親の奥（負のZ方向）に一列で並び、部分木ごとに幅を確保
 - **対数スケール高さ**: ファイルサイズに応じた高さ（log10スケール）
 - **年齢ベース色分け**: mtimeに基づく5段階の色（24h/1w/1m/1y/それ以上）
 - **3Dピッキング**: ファイルのAABBをレンダリング位置に合わせて正確にピッキング
@@ -1478,13 +1435,13 @@ class LayoutConfig:
 - **Orbit/Flyカメラモード**: Orbit（注視点周り回転）とFly（FPS風WASD移動＋マウス視点）をボタンで切り替え
 - **Flyモード衝突検出**: 地面・プラットフォーム・ファイルキューブとのAABB判定＋軸分離スライド
 - **ナビゲーション履歴**: Back/Forward（内部で管理、UIから操作可能）
-- **スポットライト**: 選択ノード上に半透明コーン表示
+- **スポットライト**: 選択ファイル上に半透明コーン表示（ディレクトリは fsn 同様、台座とそこへ至るワイヤーが明るくなる）
 - **ファイルツリー**: QTreeWidget による階層表示＋同期選択
 - **リアルタイム検索**: インクリメンタルサーチ
 - **高度なフィルタリング**: サイズ・年齢・種別による絞り込み（FilterPanel）
 - **ファイル年齢凡例**: 左下に表示される色分け凡例（FileAgeLegend）
 - **非同期スキャン**: QThreadによるバックグラウンド読み込み
-- **遅延ロード**: 深い階層は必要時に展開（再帰ロード対応）
+- **遅延ロード**: `--lazy-depth` より深いディレクトリはクリック時に読み込み、風景をその場で再配置
 - **ファイルオープン**: ダブルクリックでファイルをOSデフォルトアプリで開く
 - **エラーハンドリング**: ファイルオープン失敗時のエラーダイアログ表示
 - **デプスフォグ**: 距離に応じたフォグ効果（リニアフォグ）
@@ -1515,13 +1472,15 @@ class LayoutConfig:
 
 ### ❌ 未実装機能
 - **キーボードによるカメラ操作**: F（スナップ）、R（リセット）、Esc（選択解除）等
-- **ビュープリセット**: Bird's Eye、Front view
+- **fsn にあって未実装のもの**: ワープモード、スキャン結果のデータベース保存、ファイル変更の監視（FAM 相当）、マーク（視点の保存）、分割画面でのファイル移動/コピー、選択時にファイルを縮める shrinkOnZoom、遠方を細くする shrinkage
 
 ### 🔧 最適化機能
 - **PerformanceMonitor**: FPS/フレームタイム計測（接続済み）
 - **FrustumCuller**: 視錐台カリング（部分接続: `paintGL` で更新、`is_node_visible` で使用）
 - **LevelOfDetail**: 距離ベースLOD（部分接続: エッジ描画スキップ、小キューブスキップ）
 - **ProgressiveLoader**: プログレッシブロード（未接続）
+- **バッチ描画**: 台座とファイルキューブを頂点配列にまとめて数回の GL 呼び出しで描画（検索スポットライト中のみ従来の1個ずつの描画）
+- **ファイル名オーバーレイ**: カメラから 45 以内・最大 150 件のみ、NumPy で一括投影
 
 ### 📦 将来の拡張資産（実装済み、未使用）
 - **ModernGL資産**: `cube_geometry.py`、`shaders.py`（GPUインスタンシング用）
@@ -1530,6 +1489,20 @@ class LayoutConfig:
 ---
 
 ## 13. 変更履歴
+
+### v2.1.0 (2026-11-26) - fsn 準拠のレイアウトとナビゲーション
+
+fsn(1) の man page を基準に以下を変更。
+
+- **レイアウト**: 部分木の幅を確保する2パスのツリーレイアウトに置き換え（衝突回避の押し出しを廃止）。兄弟ディレクトリは前縁が揃う
+- **高さ**: `HeightMode`（none / linear / exaggerated / log）と `DirHeightMode`（flat / files / children）。台座の高さは既定で直下ファイルの合計
+- **単一ランドスケープ**: ディレクトリのクリックで遅延読み込みして再配置。ダブルクリックでの再ルートを廃止し、右クリック › Set as Root に移動。リフレッシュ後も展開状態と視点を維持
+- **操作**: 中ボタン（Alt+左ドラッグ）飛行、ワイヤーのクリック選択、View › Bird's Eye View、Reset View は正面ビュー
+- **表示**: 地平線に追従する空、ランドスケープ（grass / ocean / desert / space / indigo）、未読み込み・枝刈りディレクトリの色分け、ディレクトリ名は台座の手前に固定配置
+- **枝刈り**: 右クリック › Prune / Restore
+- **性能**: キューブのバッチ描画、ラベル配置のキャッシュ、ファイル名オーバーレイの一括投影
+- **修正**: ドラッグ中にマウス移動量が累積していた不具合、スキャン完了後もステータスバーが "Scanning" のままになる不具合
+- **削除**: 未使用だった RADIAL / SPIRAL / HEURISTIC 配置と `PlacementStrategy`
 
 ### v2.0.0 (2026-02-11) - Flyモード復活＆衝突検出
 

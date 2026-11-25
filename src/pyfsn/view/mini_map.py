@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 from PyQt6.QtCore import Qt, QTimer, QPointF, QRectF, pyqtSignal
-from PyQt6.QtGui import QPainter, QColor, QPen, QBrush, QFont, QPolygonF
+from PyQt6.QtGui import QPainter, QColor, QPen, QBrush, QFont, QPixmap, QPolygonF
 from PyQt6.QtWidgets import QWidget
 
 if TYPE_CHECKING:
@@ -77,6 +77,11 @@ class MiniMap(QWidget):
         # Fixed size for the mini map
         self.setFixedSize(self.DEFAULT_SIZE, self.DEFAULT_SIZE)
 
+        # The node dots only change with the scene or the selection, so they
+        # are painted once into this layer and blitted on every repaint
+        # (the camera marker moves every frame, the dots do not)
+        self._node_layer: QPixmap | None = None
+
         # Update timer (throttle updates for performance)
         self._update_pending = False
         self._update_timer = QTimer(self)
@@ -111,6 +116,7 @@ class MiniMap(QWidget):
 
         # Recalculate scene bounds
         self._calculate_scene_bounds()
+        self._node_layer = None
 
         # Schedule update (throttled)
         self._schedule_update()
@@ -122,6 +128,7 @@ class MiniMap(QWidget):
             selected_paths: Set of selected path strings
         """
         self._selected_paths = selected_paths
+        self._node_layer = None
         self._schedule_update()
 
     def set_current_directory(self, path: str | None) -> None:
@@ -131,6 +138,7 @@ class MiniMap(QWidget):
             path: Current directory path string
         """
         self._current_path = path
+        self._node_layer = None
         self._schedule_update()
 
     def _calculate_scene_bounds(self) -> None:
@@ -189,8 +197,22 @@ class MiniMap(QWidget):
         # Draw grid
         self._draw_grid(painter)
 
-        # Draw nodes
-        self._draw_nodes(painter)
+        # Draw nodes (cached layer)
+        dpr = self.devicePixelRatioF()
+        if (
+            self._node_layer is None
+            or self._node_layer.width() != int(self.width() * dpr)
+            or self._node_layer.height() != int(self.height() * dpr)
+        ):
+            layer = QPixmap(int(self.width() * dpr), int(self.height() * dpr))
+            layer.setDevicePixelRatio(dpr)
+            layer.fill(Qt.GlobalColor.transparent)
+            layer_painter = QPainter(layer)
+            layer_painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            self._draw_nodes(layer_painter)
+            layer_painter.end()
+            self._node_layer = layer
+        painter.drawPixmap(0, 0, self._node_layer)
 
         # Draw camera frustum
         self._draw_camera_frustum(painter)
@@ -258,35 +280,32 @@ class MiniMap(QWidget):
         if not self._positions:
             return
 
-        # Draw all nodes as dots
+        # Like fsn's overview, the map shows the directories. Files are far
+        # too many and too small to read here; only selected ones are drawn.
+        painter.setPen(Qt.PenStyle.NoPen)
+        special: list[tuple[str, QColor, float]] = []
+
+        painter.setBrush(self.DIR_COLOR)
         for path, pos in self._positions.items():
-            if path not in self._nodes:
+            node = self._nodes.get(path)
+            if node is None:
                 continue
-
-            node = self._nodes[path]
-            center = pos.center
-            map_pos = self._world_to_map(center[0], center[2])
-
-            # Determine color
             if path == self._current_path:
-                color = self.CURRENT_DIR_COLOR
-                radius = 4
+                special.append((path, self.CURRENT_DIR_COLOR, 4))
             elif path == self._root_path:
-                color = self.ROOT_COLOR
-                radius = 4
+                special.append((path, self.ROOT_COLOR, 4))
             elif path in self._selected_paths:
-                color = self.SELECTED_COLOR
-                radius = 3
-            elif hasattr(node, 'is_directory') and node.is_directory:
-                color = self.DIR_COLOR
-                radius = 2
-            else:
-                color = self.FILE_COLOR
-                radius = 1.5
+                special.append((path, self.SELECTED_COLOR, 3))
+            elif node.is_directory:
+                center = pos.center
+                map_pos = self._world_to_map(center[0], center[2])
+                painter.drawEllipse(QPointF(map_pos[0], map_pos[1]), 2, 2)
 
-            # Draw node
+        # Highlighted nodes on top
+        for path, color, radius in special:
+            center = self._positions[path].center
+            map_pos = self._world_to_map(center[0], center[2])
             painter.setBrush(color)
-            painter.setPen(Qt.PenStyle.NoPen)
             painter.drawEllipse(QPointF(map_pos[0], map_pos[1]), radius, radius)
 
     def _draw_camera_frustum(self, painter: QPainter) -> None:

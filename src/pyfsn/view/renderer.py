@@ -29,6 +29,72 @@ class ColorMode(Enum):
     AGE = "age"    # Color by file age (SGI fsn style)
 
 
+@dataclass(frozen=True)
+class Landscape:
+    """Colours of the sky and the ground (fsn "-landscape" option)."""
+    name: str
+    sky_bottom: tuple[float, float, float]   # At the horizon
+    sky_top: tuple[float, float, float]      # High above
+    ground_near: tuple[float, float, float]
+    ground_far: tuple[float, float, float]
+    grid: tuple[float, float, float, float]
+
+
+# The landscape names are fsn's; the colours are pyfsn's own interpretation
+# of the man page descriptions (a meadow by day, an ocean at sunset, a desert
+# at sunrise, black space, and the muted "indigo" variant of grass).
+LANDSCAPES: dict[str, Landscape] = {
+    "grass": Landscape("Grass", (0.6, 0.8, 1.0), (0.15, 0.25, 0.65),
+                       (0.2, 0.45, 0.2), (0.15, 0.38, 0.15), (0.28, 0.48, 0.28, 0.25)),
+    "ocean": Landscape("Ocean", (1.0, 0.55, 0.3), (0.25, 0.1, 0.4),
+                       (0.05, 0.25, 0.45), (0.1, 0.35, 0.5), (0.2, 0.45, 0.6, 0.25)),
+    "desert": Landscape("Desert", (1.0, 0.8, 0.6), (0.3, 0.5, 0.85),
+                        (0.76, 0.6, 0.38), (0.68, 0.5, 0.3), (0.82, 0.68, 0.46, 0.25)),
+    "space": Landscape("Space", (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+                       (0.03, 0.03, 0.06), (0.03, 0.03, 0.06), (0.2, 0.3, 0.6, 0.35)),
+    "indigo": Landscape("Indigo", (0.45, 0.6, 0.8), (0.2, 0.25, 0.5),
+                        (0.2, 0.36, 0.25), (0.16, 0.3, 0.22), (0.28, 0.42, 0.32, 0.25)),
+}
+
+
+def _unit_cube_arrays() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Unit cube as quad vertices, per-vertex normals and edge line vertices."""
+    faces = [
+        ((0, 0, 1), [(-.5, -.5, .5), (.5, -.5, .5), (.5, .5, .5), (-.5, .5, .5)]),
+        ((0, 0, -1), [(.5, -.5, -.5), (-.5, -.5, -.5), (-.5, .5, -.5), (.5, .5, -.5)]),
+        ((0, 1, 0), [(-.5, .5, .5), (.5, .5, .5), (.5, .5, -.5), (-.5, .5, -.5)]),
+        ((0, -1, 0), [(-.5, -.5, -.5), (.5, -.5, -.5), (.5, -.5, .5), (-.5, -.5, .5)]),
+        ((1, 0, 0), [(.5, -.5, .5), (.5, -.5, -.5), (.5, .5, -.5), (.5, .5, .5)]),
+        ((-1, 0, 0), [(-.5, -.5, -.5), (-.5, -.5, .5), (-.5, .5, .5), (-.5, .5, -.5)]),
+    ]
+    quads = np.array([v for _, verts in faces for v in verts], dtype=np.float32)
+    normals = np.array([n for n, verts in faces for _ in verts], dtype=np.float32)
+    corners = [(-.5, -.5), (.5, -.5), (.5, .5), (-.5, .5)]  # (x, z) around the box
+    edges = []
+    for i in range(4):
+        (x0, z0), (x1, z1) = corners[i], corners[(i + 1) % 4]
+        edges += [(x0, -.5, z0), (x1, -.5, z1)]  # bottom ring
+        edges += [(x0, .5, z0), (x1, .5, z1)]    # top ring
+        edges += [(x0, -.5, z0), (x0, .5, z0)]   # vertical
+    return quads, normals, np.array(edges, dtype=np.float32)
+
+
+_CUBE_QUADS, _CUBE_NORMALS, _CUBE_EDGES = _unit_cube_arrays()
+
+
+@dataclass
+class _CubeBatch:
+    """All cubes of one kind as flat vertex arrays (drawn in a few GL calls)."""
+    count: int
+    centers: np.ndarray       # (N, 3) for per-frame distance LOD
+    max_scales: np.ndarray    # (N,)
+    vertices: np.ndarray      # (N*24, 3)
+    normals: np.ndarray       # (N*24, 3)
+    colors: np.ndarray        # (N*24, 4)
+    edge_vertices: np.ndarray  # (N*24, 3)
+    edge_colors: np.ndarray    # (N*24, 4)
+
+
 @dataclass
 class CubeInstance:
     """Single cube instance data."""
@@ -37,6 +103,7 @@ class CubeInstance:
     color: np.ndarray     # [r, g, b, a]
     shininess: float = 30.0  # Specular shininess (0-128), default for file cubes
     emission: float = 0.0    # Emission intensity for glow effect (0.0 - 1.0+)
+    path: str = ""           # Path of the node this instance stands for
 
 
 class Renderer(QOpenGLWidget):
@@ -71,6 +138,19 @@ class Renderer(QOpenGLWidget):
         self._platforms: list[CubeInstance] = []  # Directories are platforms
         self._connections: list[list[np.ndarray]] = []  # Polyline segments (L-shaped routing)
         self._connection_metadata: list[tuple[str, str]] = []  # (parent_path, child_path) for each connection (PR-4)
+        self._slot_widths: dict[str, float] = {}  # Ground strip width per directory (for labels)
+        self._pruned_paths: set[str] = set()
+        # Directory label quads, rebuilt lazily after each load_layout
+        self._label_cache: list[tuple[int, float, float, float, float]] | None = None
+        # Sky and ground colours
+        self._landscape: Landscape = LANDSCAPES["grass"]
+        self._fog_dirty = False
+        # Batched vertex arrays for platforms and file cubes; None = rebuild
+        self._batches: tuple[_CubeBatch, _CubeBatch] | None = None
+        # Half diagonal of the laid-out scene (for clip planes and fog)
+        self._scene_radius: float = 50.0
+        # Ground plane extent (centre x, centre z, half size), follows the layout bounds
+        self._ground_extent: tuple[float, float, float] = (0.0, 0.0, 500.0)
         self._node_to_cube: dict[str, int] = {}
         self._node_to_platform: dict[str, int] = {}
 
@@ -97,6 +177,9 @@ class Renderer(QOpenGLWidget):
             "symlink": np.array([0.3, 1.0, 0.3, 1.0], dtype=np.float32),
             "selected": np.array([1.0, 1.0, 0.3, 1.0], dtype=np.float32),
             "focused": np.array([1.0, 0.8, 0.0, 1.0], dtype=np.float32),
+            # Directories whose contents have not been scanned yet / are pruned
+            "unloaded": np.array([0.32, 0.40, 0.55, 1.0], dtype=np.float32),
+            "pruned": np.array([0.45, 0.35, 0.50, 1.0], dtype=np.float32),
         }
 
         # Type-mode category colors (RGBA, alpha will be set to 0.8 for file blocks)
@@ -211,7 +294,8 @@ class Renderer(QOpenGLWidget):
                 continue
             node = self._nodes.get(path)
             if node and node.type != NodeType.SYMLINK and self._color_mode == ColorMode.AGE:
-                self._cubes[idx].color = self._calculate_age_color(node.mtime)
+                self._cubes[idx].color = self._file_base_color(node)
+        self._batches = None
         self.update()
 
     @property
@@ -223,6 +307,7 @@ class Renderer(QOpenGLWidget):
         """Set the current theme for theme-specific rendering."""
         from pyfsn.view.theme import Theme
         self._theme = theme
+        self._batches = None
 
     def _calculate_emission(self, node: Node) -> float:
         """Calculate emission intensity based on file type and git status.
@@ -276,21 +361,25 @@ class Renderer(QOpenGLWidget):
 
         return min(emission, 1.0)
 
-    def _calculate_pedestal_height(self, node: Node) -> float:
-        """Calculate pedestal height based on directory content size (FSN style).
+    def _platform_base_color(self, path: str, node: Node | None) -> np.ndarray:
+        """Unselected colour of a directory pedestal."""
+        if path in self._pruned_paths:
+            return self._colors["pruned"].copy()
+        if node is not None and node.is_directory and not node.is_loaded:
+            return self._colors["unloaded"].copy()
+        return self._colors["directory"].copy()
 
-        In original FSN, pedestal height = total file sizes in directory.
-        Uses logarithmic scale for visual clarity.
-        """
-        total_size = node.total_size
-        if total_size <= 0:
-            return 0.3  # Minimum height for empty directories
-
-        # Logarithmic scale: 1KB ≈ 3, 1MB ≈ 6, 1GB ≈ 9
-        log_size = math.log10(max(total_size, 1))
-        # Scale: 1KB -> ~0.9, 1MB -> ~1.5, 1GB -> ~2.1
-        height = 0.3 + log_size * 0.2
-        return min(max(height, 0.3), 3.0)
+    def _file_base_color(self, node: Node) -> np.ndarray:
+        """Unselected colour of a file box (age or type based)."""
+        if node.type == NodeType.SYMLINK:
+            color = self._colors["symlink"].copy()
+        elif self._color_mode == ColorMode.AGE:
+            color = self._calculate_age_color(node.mtime)
+        else:
+            color = self._calculate_type_color(node)
+        # Semi-transparent file blocks (SGI fsn style translucency)
+        color[3] = 0.8
+        return color
 
     def initializeGL(self) -> None:
         """Initialize OpenGL resources."""
@@ -317,10 +406,40 @@ class Renderer(QOpenGLWidget):
         """Set up depth fog for distance fade effect."""
         glEnable(GL_FOG)
         glFogi(GL_FOG_MODE, GL_LINEAR)
-        glFogfv(GL_FOG_COLOR, [0.1, 0.1, 0.15, 1.0])  # Match background color
+        # Fade into the colour of the sky at the horizon, so the far edge of
+        # the ground melts into it instead of ending in a dark band
+        glFogfv(GL_FOG_COLOR, [*self._sky_colors[0], 1.0])
         glFogf(GL_FOG_START, 80.0)
         glFogf(GL_FOG_END, 600.0)
         glHint(GL_FOG_HINT, GL_NICEST)
+
+    def _update_view_range(self) -> None:
+        """Fit the clip planes and the fog to the camera's distance from the scene."""
+        state = self.camera.state
+        center_x, center_z, _half = self._ground_extent
+        scene_radius = self._scene_radius
+        to_center = math.hypot(
+            float(state.position[0]) - center_x, float(state.position[2]) - center_z
+        )
+        altitude = max(float(state.position[1]), 0.0)
+        reach = math.hypot(to_center + scene_radius, altitude)
+
+        far = max(1000.0, reach * 1.3)
+        # Keep the depth buffer usable: push the near plane out when high up
+        near = min(max(0.1, altitude * 0.02), 5.0)
+        state.far = far
+        state.near = near
+
+        aspect = self.width() / max(1, self.height())
+        glMatrixMode(GL_PROJECTION)
+        glLoadIdentity()
+        gluPerspective(state.fov, aspect, near, far)
+        glMatrixMode(GL_MODELVIEW)
+
+        # Fog starts beyond the nearby pedestals and never hides the scene
+        # the camera was pulled back to look at
+        glFogf(GL_FOG_START, max(80.0, reach * 0.6))
+        glFogf(GL_FOG_END, max(600.0, reach * 2.0))
 
     def resizeGL(self, w: int, h: int) -> None:
         """Handle viewport resize."""
@@ -340,6 +459,14 @@ class Renderer(QOpenGLWidget):
             return
 
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+
+        if self._fog_dirty:
+            self._fog_dirty = False
+            self._setup_fog()
+
+        # The landscape can be far wider than a fixed far plane / fog range:
+        # fit both to how far the camera is from the far side of the scene
+        self._update_view_range()
 
         # Update frustum culling (PR-5: Optimization)
         aspect = self.width() / max(1, self.height())
@@ -368,34 +495,39 @@ class Renderer(QOpenGLWidget):
         # Enable lighting for 3D objects
         glEnable(GL_LIGHTING)
 
-        # === Opaque pass: platforms (directories) ===
-        for platform in self._platforms:
-            self._draw_cube_with_spotlight(platform)
-        glDisable(GL_LIGHTING)
-        for platform in self._platforms:
-            self._draw_cube_edges(platform)
-        glEnable(GL_LIGHTING)
+        if self._spotlight.is_active:
+            # Search spotlight recolours every node each frame: draw one by one
+            # === Opaque pass: platforms (directories) ===
+            for platform in self._platforms:
+                self._draw_cube_with_spotlight(platform)
+            glDisable(GL_LIGHTING)
+            for platform in self._platforms:
+                self._draw_cube_edges(platform)
+            glEnable(GL_LIGHTING)
 
-        # Draw directory labels on platforms (SGI fsn style)
-        glDisable(GL_LIGHTING)
-        self._draw_directory_labels()
-        glEnable(GL_LIGHTING)
+            # Draw directory labels on platforms (SGI fsn style)
+            glDisable(GL_LIGHTING)
+            self._draw_directory_labels()
+            glEnable(GL_LIGHTING)
 
-        # === Translucent pass: file blocks (alpha=0.8) ===
-        glEnable(GL_BLEND)
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
-        glDepthMask(GL_FALSE)
+            # === Translucent pass: file blocks (alpha=0.8) ===
+            glEnable(GL_BLEND)
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+            glDepthMask(GL_FALSE)
 
-        for cube in self._cubes:
-            self._draw_cube_with_spotlight(cube)
+            for cube in self._cubes:
+                self._draw_cube_with_spotlight(cube)
 
-        glDepthMask(GL_TRUE)
-        glDisable(GL_BLEND)
+            glDepthMask(GL_TRUE)
+            glDisable(GL_BLEND)
 
-        # Draw file edges on top (opaque, crisp lines over translucent faces)
-        glDisable(GL_LIGHTING)
-        for cube in self._cubes:
-            self._draw_cube_edges(cube)
+            # Draw file edges on top (opaque, crisp lines over translucent faces)
+            glDisable(GL_LIGHTING)
+            for cube in self._cubes:
+                self._draw_cube_edges(cube)
+        else:
+            self._draw_scene_batched()
+            glDisable(GL_LIGHTING)
 
         # Draw spotlights for selection (transparent)
         self._draw_selection_spotlights()
@@ -412,37 +544,78 @@ class Renderer(QOpenGLWidget):
         glEnable(GL_BLEND)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
 
-        ground_size = 500.0
+        center_x, center_z, ground_size = self._ground_extent
         ground_y = -0.01  # Just below y=0 labels
+        x0, x1 = center_x - ground_size, center_x + ground_size
+        z0, z1 = center_z - ground_size, center_z + ground_size
 
         # Ground plane (Rich green gradient, FSN grass-like)
         glBegin(GL_QUADS)
-        glColor4f(0.2, 0.45, 0.2, 1.0)  # Near green
-        glVertex3f(-ground_size, ground_y, -ground_size)
-        glVertex3f(ground_size, ground_y, -ground_size)
-        glColor4f(0.15, 0.38, 0.15, 1.0)  # Far green (gradient)
-        glVertex3f(ground_size, ground_y, ground_size)
-        glVertex3f(-ground_size, ground_y, ground_size)
+        glColor4f(*self._landscape.ground_near, 1.0)
+        glVertex3f(x0, ground_y, z0)
+        glVertex3f(x1, ground_y, z0)
+        glColor4f(*self._landscape.ground_far, 1.0)
+        glVertex3f(x1, ground_y, z1)
+        glVertex3f(x0, ground_y, z1)
         glEnd()
 
-        # Grid lines - more subtle and sparser
+        # Grid lines - subtle, on a fixed world lattice so they do not swim
         glLineWidth(1.0)
-        glColor4f(0.28, 0.48, 0.28, 0.25)  # Very subtle grid
+        glColor4f(*self._landscape.grid)  # Very subtle grid
         grid_spacing = 20.0
-        grid_range = 25
+        # Keep the line count bounded on very wide landscapes
+        while ground_size / grid_spacing > 60:
+            grid_spacing *= 2.0
 
         glBegin(GL_LINES)
-        for i in range(-grid_range, grid_range + 1):
+        first_x = math.ceil(x0 / grid_spacing)
+        last_x = math.floor(x1 / grid_spacing)
+        for i in range(first_x, last_x + 1):
             offset = i * grid_spacing
-            # Lines parallel to X-axis
-            glVertex3f(-ground_size, ground_y + 0.01, offset)
-            glVertex3f(ground_size, ground_y + 0.01, offset)
-            # Lines parallel to Z-axis
-            glVertex3f(offset, ground_y + 0.01, -ground_size)
-            glVertex3f(offset, ground_y + 0.01, ground_size)
+            glVertex3f(offset, ground_y + 0.01, z0)
+            glVertex3f(offset, ground_y + 0.01, z1)
+        first_z = math.ceil(z0 / grid_spacing)
+        last_z = math.floor(z1 / grid_spacing)
+        for i in range(first_z, last_z + 1):
+            offset = i * grid_spacing
+            glVertex3f(x0, ground_y + 0.01, offset)
+            glVertex3f(x1, ground_y + 0.01, offset)
         glEnd()
 
         glDisable(GL_BLEND)
+
+    @property
+    def _sky_colors(self) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+        """Sky colours: (at the horizon, high above)."""
+        return self._landscape.sky_bottom, self._landscape.sky_top
+
+    def set_landscape(self, key: str) -> bool:
+        """Switch the sky/ground colours.
+
+        Returns:
+            False if the landscape name is unknown
+        """
+        landscape = LANDSCAPES.get(key)
+        if landscape is None:
+            return False
+        self._landscape = landscape
+        self._fog_dirty = True  # Fog colour follows the horizon; needs the GL context
+        self.update()
+        return True
+
+    def _horizon_ndc_y(self) -> float:
+        """Screen height of the horizon in normalized device coordinates."""
+        state = self.camera.state
+        forward = state.target - state.position
+        norm = float(np.linalg.norm(forward))
+        if norm < 1e-6:
+            return 0.0
+        # Positive pitch = looking down = horizon above the screen centre
+        pitch = -math.asin(max(-1.0, min(1.0, float(forward[1]) / norm)))
+        if abs(pitch) > math.radians(89.0):
+            return 4.0 if pitch > 0 else -4.0
+        y = math.tan(pitch) / math.tan(math.radians(state.fov) / 2.0)
+        return max(-4.0, min(4.0, y))
 
     def _draw_sky_gradient(self) -> None:
         """Draw sky gradient as a fullscreen quad (FSN classic style)."""
@@ -457,18 +630,26 @@ class Renderer(QOpenGLWidget):
         glPushMatrix()
         glLoadIdentity()
         
-        # Draw fullscreen quad with gradient (FSN original style - bright sky)
+        # The gradient hangs on the real horizon, so the sky stays put when
+        # the camera tilts (bottom colour at the horizon, top colour above it)
+        horizon = self._horizon_ndc_y()
+        bottom_color, top_color = self._sky_colors
+        top = max(horizon + 1.2, 1.0)
         glBegin(GL_QUADS)
-        # Bottom (horizon) - bright cyan/blue
-        glColor4f(0.6, 0.8, 1.0, 1.0)
+        # Below the horizon: plain horizon colour (normally hidden by the ground)
+        glColor4f(*bottom_color, 1.0)
         glVertex3f(-1.0, -1.0, -0.999)
         glVertex3f(1.0, -1.0, -0.999)
-        # Top - deeper blue (SGI classic)
-        glColor4f(0.15, 0.25, 0.65, 1.0)
-        glVertex3f(1.0, 1.0, -0.999)
-        glVertex3f(-1.0, 1.0, -0.999)
+        glVertex3f(1.0, horizon, -0.999)
+        glVertex3f(-1.0, horizon, -0.999)
+        # Horizon up to the zenith colour
+        glVertex3f(-1.0, horizon, -0.999)
+        glVertex3f(1.0, horizon, -0.999)
+        glColor4f(*top_color, 1.0)
+        glVertex3f(1.0, top, -0.999)
+        glVertex3f(-1.0, top, -0.999)
         glEnd()
-        
+
         # Restore matrices
         glMatrixMode(GL_PROJECTION)
         glPopMatrix()
@@ -632,11 +813,8 @@ class Renderer(QOpenGLWidget):
                 cube = self._cubes[idx]
                 self._draw_spotlight(cube.position, height=8.0, radius=2.0)
             
-            # Check if it's a platform
-            elif path in self._node_to_platform:
-                idx = self._node_to_platform[path]
-                platform = self._platforms[idx]
-                self._draw_spotlight(platform.position, height=12.0, radius=4.0)
+            # Directories get no cone: like in fsn, a selected directory and
+            # the line leading to it brighten instead
         
         glDisable(GL_BLEND)
 
@@ -673,6 +851,146 @@ class Renderer(QOpenGLWidget):
             dz = radius * math.sin(angle)
             glVertex3f(x + dx, y + 0.05, z + dz)
         glEnd()
+
+    # ------------------------------------------------------------------
+    # Batched drawing: all cubes of the scene in a handful of GL calls
+    # ------------------------------------------------------------------
+
+    def _build_batch(self, instances: list[CubeInstance], bright_edges: bool) -> _CubeBatch:
+        """Flatten cube instances into vertex arrays."""
+        count = len(instances)
+        if count == 0:
+            empty3 = np.zeros((0, 3), dtype=np.float32)
+            empty4 = np.zeros((0, 4), dtype=np.float32)
+            return _CubeBatch(0, empty3, np.zeros(0, dtype=np.float32), empty3, empty3,
+                              empty4, empty3, empty4)
+
+        centers = np.array([c.position for c in instances], dtype=np.float32)
+        scales = np.array([c.scale for c in instances], dtype=np.float32)
+        colors = np.array([c.color for c in instances], dtype=np.float32)
+        emission = np.array([c.emission for c in instances], dtype=np.float32)
+
+        # Bake the glow that _draw_cube applies per cube
+        lit = colors.copy()
+        glowing = emission > 0.01
+        if self._bloom.enabled and glowing.any():
+            glow = (emission * self._bloom.intensity * 2.0)[:, None]
+            lit[:, :3] = np.where(glowing[:, None], np.minimum(1.0, lit[:, :3] + glow), lit[:, :3])
+        lit[:, :3] = np.minimum(1.0, lit[:, :3] * (1.0 + emission[:, None] * 0.3))
+
+        vertices = (centers[:, None, :] + _CUBE_QUADS[None, :, :] * scales[:, None, :]).reshape(-1, 3)
+        normals = np.tile(_CUBE_NORMALS, (count, 1))
+        vertex_colors = np.repeat(lit, 24, axis=0)
+
+        edge_vertices = (centers[:, None, :] + _CUBE_EDGES[None, :, :] * scales[:, None, :]).reshape(-1, 3)
+        edge = colors.copy()
+        if bright_edges:
+            edge[:, :3] = np.minimum(1.0, edge[:, :3] * 0.5 + 0.5)
+        else:
+            edge[:, :3] *= 0.3
+        edge_colors = np.repeat(edge, 24, axis=0)
+
+        return _CubeBatch(
+            count=count,
+            centers=centers,
+            max_scales=scales.max(axis=1),
+            vertices=np.ascontiguousarray(vertices, dtype=np.float32),
+            normals=np.ascontiguousarray(normals, dtype=np.float32),
+            colors=np.ascontiguousarray(vertex_colors, dtype=np.float32),
+            edge_vertices=np.ascontiguousarray(edge_vertices, dtype=np.float32),
+            edge_colors=np.ascontiguousarray(edge_colors, dtype=np.float32),
+        )
+
+    def _draw_batch_faces(self, batch: _CubeBatch, specular: float, shininess: float) -> None:
+        """Draw the lit faces of a batch."""
+        if batch.count == 0:
+            return
+        glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR, [specular, specular, specular, 1.0])
+        glMaterialf(GL_FRONT_AND_BACK, GL_SHININESS, shininess)
+        glVertexPointer(3, GL_FLOAT, 0, batch.vertices)
+        glNormalPointer(GL_FLOAT, 0, batch.normals)
+        glColorPointer(4, GL_FLOAT, 0, batch.colors)
+        glDrawArrays(GL_QUADS, 0, batch.count * 24)
+
+    def _draw_batch_edges(self, batch: _CubeBatch, line_width: float) -> None:
+        """Draw the outlines of the cubes that are close enough to matter."""
+        if batch.count == 0:
+            return
+        camera_pos = self.camera.state.position
+        distances = np.linalg.norm(batch.centers - camera_pos, axis=1)
+        visible = distances <= self._lod_edge_threshold
+        visible &= ~((batch.max_scales < 0.5) & (distances > self._lod_small_cube_threshold * 0.3))
+        selected = np.nonzero(visible)[0]
+        if selected.size == 0:
+            return
+        indices = (selected[:, None] * 24 + np.arange(24)[None, :]).astype(np.uint32).ravel()
+
+        glLineWidth(line_width)
+        glVertexPointer(3, GL_FLOAT, 0, batch.edge_vertices)
+        glColorPointer(4, GL_FLOAT, 0, batch.edge_colors)
+        glDrawElements(GL_LINES, indices.size, GL_UNSIGNED_INT, indices)
+
+    def _draw_scene_batched(self) -> None:
+        """Draw platforms, labels and file cubes from the batched arrays.
+
+        Same passes and look as the per-cube path, but the cost no longer
+        grows with one Python call per cube.
+        """
+        if self._batches is None:
+            self._batches = (
+                self._build_batch(self._platforms, bright_edges=True),
+                self._build_batch(self._cubes, bright_edges=False),
+            )
+        platforms, files = self._batches
+
+        glEnableClientState(GL_VERTEX_ARRAY)
+        glEnableClientState(GL_COLOR_ARRAY)
+
+        def lit_pass(batch: _CubeBatch, specular: float, shininess: float) -> None:
+            # Vertex colours drive ambient+diffuse. _draw_cube uses 40% of the
+            # colour as ambient, so scale the ambient light instead.
+            glEnable(GL_LIGHTING)
+            glEnable(GL_COLOR_MATERIAL)
+            glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE)
+            glLightfv(GL_LIGHT0, GL_AMBIENT, [0.12, 0.12, 0.14, 1.0])
+            glLightModelfv(GL_LIGHT_MODEL_AMBIENT, [0.08, 0.08, 0.08, 1.0])
+            glMaterialfv(GL_FRONT_AND_BACK, GL_EMISSION, [0.0, 0.0, 0.0, 1.0])
+            glEnableClientState(GL_NORMAL_ARRAY)
+            self._draw_batch_faces(batch, specular, shininess)
+            glDisableClientState(GL_NORMAL_ARRAY)
+            glDisable(GL_COLOR_MATERIAL)
+            glLightfv(GL_LIGHT0, GL_AMBIENT, [0.3, 0.3, 0.35, 1.0])
+            glLightModelfv(GL_LIGHT_MODEL_AMBIENT, [0.2, 0.2, 0.2, 1.0])
+            glDisable(GL_LIGHTING)
+
+        def edge_pass(batch: _CubeBatch, line_width: float) -> None:
+            glEnable(GL_POLYGON_OFFSET_LINE)
+            glPolygonOffset(-1.0, -1.0)
+            self._draw_batch_edges(batch, line_width)
+            glDisable(GL_POLYGON_OFFSET_LINE)
+
+        # Opaque pass: platforms (matte)
+        lit_pass(platforms, 0.2, 5.0)
+        edge_pass(platforms, 2.0)
+
+        # Directory names on the ground (uses its own immediate-mode quads)
+        glDisableClientState(GL_COLOR_ARRAY)
+        glDisableClientState(GL_VERTEX_ARRAY)
+        self._draw_directory_labels()
+        glEnableClientState(GL_VERTEX_ARRAY)
+        glEnableClientState(GL_COLOR_ARRAY)
+
+        # Translucent pass: file blocks (glossy)
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        glDepthMask(GL_FALSE)
+        lit_pass(files, 0.8, 50.0)
+        glDepthMask(GL_TRUE)
+        glDisable(GL_BLEND)
+        edge_pass(files, 1.5)
+
+        glDisableClientState(GL_COLOR_ARRAY)
+        glDisableClientState(GL_VERTEX_ARRAY)
 
     def _draw_cube(self, cube: CubeInstance) -> None:
         """Draw a single cube with OpenGL material-based lighting."""
@@ -762,7 +1080,7 @@ class Renderer(QOpenGLWidget):
         # Apply spotlight effects if active
         if self._spotlight.is_active:
             # Find the path for this cube
-            path = self._find_path_for_cube(cube)
+            path = cube.path
             if path:
                 # Get spotlight-modified color
                 original_color = cube.color.copy()
@@ -780,27 +1098,6 @@ class Renderer(QOpenGLWidget):
 
         # No spotlight active, draw normally
         self._draw_cube(cube)
-
-    def _find_path_for_cube(self, cube: CubeInstance) -> str | None:
-        """Find the path string for a given cube instance.
-
-        Args:
-            cube: CubeInstance to find path for
-
-        Returns:
-            Path string or None
-        """
-        # Search in cubes
-        for path, idx in self._path_to_cube_index.items():
-            if idx < len(self._cubes) and self._cubes[idx] is cube:
-                return path
-
-        # Search in platforms
-        for path, idx in self._path_to_platform_index.items():
-            if idx < len(self._platforms) and self._platforms[idx] is cube:
-                return path
-
-        return None
 
     def _draw_search_spotlights(self) -> None:
         """Draw cone spotlights over matching search results.
@@ -977,6 +1274,11 @@ class Renderer(QOpenGLWidget):
         self._path_to_platform_index.clear()
         self._nodes = nodes
         self._positions = layout_result.positions
+        self._slot_widths = getattr(layout_result, "slot_widths", {}) or {}
+        self._pruned_paths = set(getattr(layout_result, "pruned", ()) or ())
+        self._label_cache = None
+        self._batches = None
+        self._update_ground_extent(layout_result.positions)
 
         # Cancel any in-progress camera animation so it doesn't override
         # the camera position set after scene load
@@ -1001,8 +1303,9 @@ class Renderer(QOpenGLWidget):
         platform_w = position.width
         platform_d = position.depth
 
-        # FSN style: pedestal height proportional to content size (Phase 2)
-        height = self._calculate_pedestal_height(node)
+        # FSN style: pedestal height comes from the layout (size of the
+        # files in the directory, see LayoutConfig.dir_height_mode)
+        height = position.height
 
         # "Grow Up" model: Base at y=0, extends upwards
         pos_array = np.array([
@@ -1020,11 +1323,12 @@ class Renderer(QOpenGLWidget):
         if path_str in selection:
             color = self._colors["selected"].copy()
         else:
-            color = self._colors["directory"].copy()
+            color = self._platform_base_color(path_str, node)
 
         emission = self._calculate_emission(node)
 
-        platform = CubeInstance(position=pos_array, scale=scale_array, color=color, shininess=5.0, emission=emission)
+        platform = CubeInstance(position=pos_array, scale=scale_array, color=color, shininess=5.0,
+                                emission=emission, path=path_str)
         self._node_to_platform[path_str] = len(self._platforms)
         self._path_to_platform_index[path_str] = len(self._platforms)
         self._platforms.append(platform)
@@ -1033,14 +1337,10 @@ class Renderer(QOpenGLWidget):
         """Create and register a cube (file) render instance."""
         height = position.height
 
-        # Place file on top of parent pedestal
-        parent_height = 0.0
-        if node.parent and self._calculate_pedestal_height:
-            parent_height = self._calculate_pedestal_height(node.parent)
-
+        # The layout already places files on top of their pedestal
         pos_array = np.array([
             position.x + position.width / 2,
-            parent_height + height / 2,
+            position.y + height / 2,
             position.z + position.depth / 2,
         ], dtype=np.float32)
 
@@ -1052,19 +1352,14 @@ class Renderer(QOpenGLWidget):
 
         if path_str in selection:
             color = self._colors["selected"].copy()
-        elif node.type == NodeType.SYMLINK:
-            color = self._colors["symlink"].copy()
-        elif self._color_mode == ColorMode.AGE:
-            color = self._calculate_age_color(node.mtime)
+            color[3] = 0.8
         else:
-            color = self._calculate_type_color(node)
-
-        # Semi-transparent file blocks (SGI fsn style translucency)
-        color[3] = 0.8
+            color = self._file_base_color(node)
 
         emission = self._calculate_emission(node)
 
-        cube = CubeInstance(position=pos_array, scale=scale_array, color=color, shininess=50.0, emission=emission)
+        cube = CubeInstance(position=pos_array, scale=scale_array, color=color, shininess=50.0,
+                            emission=emission, path=path_str)
         self._node_to_cube[path_str] = len(self._cubes)
         self._path_to_cube_index[path_str] = len(self._cubes)
         self._cubes.append(cube)
@@ -1139,10 +1434,6 @@ class Renderer(QOpenGLWidget):
         for j in range(len(polyline) - 1):
             total += float(np.linalg.norm(polyline[j + 1] - polyline[j]))
         return total
-
-    def _on_timer(self) -> None:
-        """Timer callback for animation."""
-        self.update()
 
     # Properties for compatibility with existing code
 
@@ -1238,11 +1529,8 @@ class Renderer(QOpenGLWidget):
             # Get AABB bounds - match actual rendered positions (Grow Up model)
             if node.is_directory:
                 # Platform: rendered from y=0 upwards
-                # Height is calculated by _calculate_pedestal_height
-                height = self._calculate_pedestal_height(node)
-                
                 min_y = 0.0
-                max_y = height
+                max_y = position.height
                 
                 # Platform width/depth from layout position
                 min_x = position.x
@@ -1257,13 +1545,9 @@ class Renderer(QOpenGLWidget):
                 # File: rendered on top of parent pedestal
                 height = position.height
                 
-                # Calculate parent pedestal height to determine base Y
-                parent_height = 0.0
-                if node.parent and self._calculate_pedestal_height:
-                     parent_height = self._calculate_pedestal_height(node.parent)
-                
-                min_y = parent_height
-                max_y = parent_height + height
+                # The layout position already sits on the parent pedestal
+                min_y = position.y
+                max_y = position.y + height
                 
                 # File width/depth (scaled by 0.8 as in load_layout)
                 width_scaled = position.width * 0.8
@@ -1284,6 +1568,50 @@ class Renderer(QOpenGLWidget):
                 closest_node = node
 
         return closest_node
+
+    def pick_connection(self, screen_x: int, screen_y: int) -> str | None:
+        """Find the wire under a screen position.
+
+        Wires lie on the ground, so the pick ray is intersected with the
+        ground plane and compared against every wire segment.
+
+        Returns:
+            Path of the directory the wire leads to, or None
+        """
+        if not self._connections:
+            return None
+
+        ray_dir = self.camera.get_ray_direction(screen_x, screen_y, self.width(), self.height())
+        origin = self.camera.state.position
+        if ray_dir[1] >= -1e-6:
+            return None  # Looking at the sky
+        t = (0.05 - float(origin[1])) / float(ray_dir[1])
+        if t <= 0:
+            return None
+        hit_x = float(origin[0]) + float(ray_dir[0]) * t
+        hit_z = float(origin[2]) + float(ray_dir[2]) * t
+
+        # Thin lines are hard to hit from far away: widen the tolerance with distance
+        tolerance = max(0.25, t * 0.012)
+
+        best_path = None
+        best_dist = tolerance
+        for polyline, (_parent, child_path) in zip(self._connections, self._connection_metadata):
+            for a, b in zip(polyline, polyline[1:]):
+                ax, az = float(a[0]), float(a[2])
+                dx, dz = float(b[0]) - ax, float(b[2]) - az
+                length_sq = dx * dx + dz * dz
+                if length_sq < 1e-9:
+                    continue
+                u = ((hit_x - ax) * dx + (hit_z - az) * dz) / length_sq
+                u = max(0.0, min(1.0, u))
+                dist = math.hypot(hit_x - (ax + dx * u), hit_z - (az + dz * u))
+                # Siblings share the bus segment; on a tie prefer the last
+                # segment, which belongs to one directory only
+                if dist < best_dist:
+                    best_dist = dist
+                    best_path = child_path
+        return best_path
 
     def _ray_aabb_intersect(self, ray_origin: np.ndarray, ray_dir: np.ndarray,
                            min_bounds: np.ndarray, max_bounds: np.ndarray) -> float | None:
@@ -1349,20 +1677,9 @@ class Renderer(QOpenGLWidget):
 
         # Calculate bbox center, accounting for actual rendered Y for files
         block_top = None
-        if not target_node.is_directory and target_node.parent:
-            parent_pedestal = self._calculate_pedestal_height(target_node.parent)
-            center = np.array([
-                position.x + position.width / 2,
-                parent_pedestal + position.height / 2,
-                position.z + position.depth / 2,
-            ], dtype=np.float32)
-            block_top = parent_pedestal + position.height
-        else:
-            center = np.array([
-                position.x + position.width / 2,
-                position.y + position.height / 2,
-                position.z + position.depth / 2,
-            ], dtype=np.float32)
+        center = np.array(position.center, dtype=np.float32)
+        if not target_node.is_directory:
+            block_top = position.y + position.height
 
         # Determine distance based on node type
         if distance is None:
@@ -1566,32 +1883,30 @@ class Renderer(QOpenGLWidget):
         # Update colors for all cubes
         for path, idx in self._node_to_cube.items():
             if path in self._selected_paths:
-                self._cubes[idx].color = self._colors["selected"].copy()
+                color = self._colors["selected"].copy()
+                color[3] = 0.8
+                self._cubes[idx].color = color
             else:
                 # Reset to default color based on color mode
                 node = nodes.get(path)
                 if node:
-                    if node.type == NodeType.SYMLINK:
-                        self._cubes[idx].color = self._colors["symlink"].copy()
-                    elif self._color_mode == ColorMode.AGE:
-                        self._cubes[idx].color = self._calculate_age_color(node.mtime)
-                    else:
-                        self._cubes[idx].color = self._calculate_type_color(node)
+                    self._cubes[idx].color = self._file_base_color(node)
 
         # Update colors for all platforms
         for path, idx in self._node_to_platform.items():
             if path in self._selected_paths:
                 self._platforms[idx].color = self._colors["selected"].copy()
             else:
-                self._platforms[idx].color = self._colors["directory"].copy()
+                self._platforms[idx].color = self._platform_base_color(path, nodes.get(path))
 
         # PR-4: Calculate which connections should be highlighted
-        # A connection is highlighted if either endpoint (parent or child directory) is selected
+        # Like in fsn, the line *leading to* a selected directory brightens
         self._selected_connections.clear()
-        for i, (parent_path, child_path) in enumerate(self._connection_metadata):
-            if parent_path in self._selected_paths or child_path in self._selected_paths:
+        for i, (_parent_path, child_path) in enumerate(self._connection_metadata):
+            if child_path in self._selected_paths:
                 self._selected_connections.add(i)
 
+        self._batches = None
         self.selection_changed.emit(self._selected_paths)
         self.update()
 
@@ -1613,13 +1928,9 @@ class Renderer(QOpenGLWidget):
             
             node = self._nodes.get(path)
             if node:
-                if node.type == NodeType.SYMLINK:
-                    self._cubes[idx].color = self._colors["symlink"].copy()
-                elif self._color_mode == ColorMode.AGE:
-                    self._cubes[idx].color = self._calculate_age_color(node.mtime)
-                else:
-                    self._cubes[idx].color = self._calculate_type_color(node)
+                self._cubes[idx].color = self._file_base_color(node)
 
+        self._batches = None
         self.update()
 
     @property
@@ -1643,16 +1954,12 @@ class Renderer(QOpenGLWidget):
                 idx = self._node_to_cube[path]
                 node = self._nodes.get(path)
                 if node:
-                    if node.type == NodeType.SYMLINK:
-                        self._cubes[idx].color = self._colors["symlink"].copy()
-                    elif self._color_mode == ColorMode.AGE:
-                        self._cubes[idx].color = self._calculate_age_color(node.mtime)
-                    else:
-                        self._cubes[idx].color = self._calculate_type_color(node)
+                    self._cubes[idx].color = self._file_base_color(node)
             # Handle directory platforms
             elif path in self._node_to_platform:
                 idx = self._node_to_platform[path]
-                self._platforms[idx].color = self._colors["directory"].copy()
+                self._platforms[idx].color = self._platform_base_color(path, self._nodes.get(path))
+        self._batches = None
         self._selected_paths.clear()
         self._selected_connections.clear()  # PR-4: Clear highlighted connections
         self.selection_changed.emit(self._selected_paths)
@@ -1902,8 +2209,9 @@ class Renderer(QOpenGLWidget):
         if not self._platforms or not self._nodes:
             return
 
-        # First, calculate label positions with collision avoidance
-        label_positions = self._calculate_label_positions()
+        # Label quads only change when the layout changes
+        if self._label_cache is None:
+            self._label_cache = self._build_label_cache()
 
         # Enable blending for text
         glEnable(GL_BLEND)
@@ -1922,19 +2230,9 @@ class Renderer(QOpenGLWidget):
         glPushMatrix()
 
         # Draw each label at its calculated position
-        for path_str, (label_x, label_z, quad_width, quad_height) in label_positions.items():
-            if path_str not in self._nodes:
-                continue
-
-            node = self._nodes[path_str]
-            if not node.is_directory:
-                continue
-
-            # Create text texture and get dimensions
-            texture_id, _, _ = self._create_text_texture(node.name, font_size=28)
-
-            # Position text on the ground (y=0)
-            text_y = 0.01  # Just above ground
+        for texture_id, label_x, label_z, quad_width, quad_height in self._label_cache:
+            # Position text on the ground, just above the grid lines
+            text_y = 0.02
 
             # Save current matrix
             glPushMatrix()
@@ -2023,152 +2321,66 @@ class Renderer(QOpenGLWidget):
                     
         return False
 
-    def _calculate_label_positions(self) -> dict[str, tuple[float, float, float, float]]:
-        """Calculate label positions with collision avoidance.
+    # Geometry of the directory name written on the ground in front of a pedestal
+    LABEL_HEIGHT = 0.9   # Preferred text height (world units)
+    LABEL_FRONT_GAP = 0.25  # Distance from the pedestal's front edge
+    LABEL_WIRE_GAP = 0.4    # Distance from the wire that enters the pedestal's centre
+    LABEL_REACH = 1.8       # How far past its own strip a label may extend (see below)
+
+    def _build_label_cache(self) -> list[tuple[int, float, float, float, float]]:
+        """Compute the ground quad for every directory name.
+
+        The name is written in front of the pedestal, to the right of the wire
+        that leads to it.  It is shrunk to fit the ground strip owned by the
+        directory's sub-tree, so labels never overlap each other or a pedestal
+        and no collision search is needed.
 
         Returns:
-            Dictionary mapping path_str to (x, z, width, height)
+            List of (texture_id, center_x, center_z, width, height)
         """
-        from dataclasses import dataclass
-
-        @dataclass
-        class LabelRect:
-            x: float  # Center X
-            z: float  # Center Z
-            width: float  # Total width
-            height: float  # Total height
-
-            @property
-            def min_x(self) -> float:
-                return self.x - self.width / 2
-
-            @property
-            def max_x(self) -> float:
-                return self.x + self.width / 2
-
-            @property
-            def min_z(self) -> float:
-                return self.z - self.height / 2
-
-            @property
-            def max_z(self) -> float:
-                return self.z + self.height / 2
-
-            def collides_with(self, other: 'LabelRect') -> bool:
-                """Check if this label collides with another."""
-                return not (
-                    self.max_x < other.min_x or self.min_x > other.max_x or
-                    self.max_z < other.min_z or self.min_z > other.max_z
-                )
-
-        # Collect all directory platforms
-        directories = []
-        for path_str, platform_idx in self._node_to_platform.items():
-            if path_str not in self._nodes:
-                continue
-            node = self._nodes[path_str]
-            if not node.is_directory:
-                continue
+        labels: list[tuple[int, float, float, float, float]] = []
+        for path_str in self._node_to_platform:
+            node = self._nodes.get(path_str)
             position = self._positions.get(path_str)
-            if not position:
+            if node is None or position is None or not node.name:
                 continue
-            directories.append((path_str, node, position))
 
-        # Sort by size (larger first) to reduce fragmentation
-        directories.sort(key=lambda x: x[2].width * x[2].depth, reverse=True)
+            texture_id, tex_width, tex_height = self._create_text_texture(node.name, font_size=28)
+            aspect = tex_width / max(tex_height, 1)
 
-        # Calculate label positions
-        placed_labels: dict[str, LabelRect] = {}
-        label_positions: dict[str, tuple[float, float, float, float]] = {}
+            # Free ground to the right of the wire: the rest of this strip plus
+            # most of the gap to the next strip. Staying out of the next strip
+            # matters: a cousin there can sit at a different depth.
+            slot = self._slot_widths.get(path_str, position.width)
+            max_width = max(0.6, slot / 2 + self.LABEL_REACH - self.LABEL_WIRE_GAP)
+            # Bigger pedestals get bigger names, but stay clear of the wire bus
+            quad_height = min(max(self.LABEL_HEIGHT, position.depth * 0.3), 1.8)
+            quad_width = quad_height * aspect
+            if quad_width > max_width:
+                quad_width = max_width
+                quad_height = quad_width / aspect
 
-        for path_str, node, position in directories:
-            # Get texture dimensions
-            _, tex_width, tex_height = self._create_text_texture(node.name, font_size=28)
+            center_x = position.x + position.width / 2 + self.LABEL_WIRE_GAP + quad_width / 2
+            center_z = position.z + position.depth + self.LABEL_FRONT_GAP + quad_height / 2
+            labels.append((texture_id, center_x, center_z, quad_width, quad_height))
 
-            # Calculate scale
-            platform_size = min(position.width, position.depth)
-            aspect_ratio = tex_width / tex_height
-            quad_width = platform_size * 0.8
-            quad_height = quad_width / aspect_ratio
+        return labels
 
-            # Platform bounds
-            plat_min_x = position.x
-            plat_max_x = position.x + position.width
-            plat_min_z = position.z
-            plat_max_z = position.z + position.depth
-            plat_center_x = (plat_min_x + plat_max_x) / 2
-            plat_center_z = (plat_min_z + plat_max_z) / 2
-
-            # Generate candidate positions around the platform
-            candidates = []
-            gap = 0.5
-
-            # Right side
-            candidates.append((plat_max_x + gap + quad_width / 2, plat_center_z, 0))
-            # Left side
-            candidates.append((plat_min_x - gap - quad_width / 2, plat_center_z, 1))
-            # Bottom side
-            candidates.append((plat_center_x, plat_max_z + gap + quad_height / 2, 2))
-            # Top side
-            candidates.append((plat_center_x, plat_min_z - gap - quad_height / 2, 3))
-
-            # Add further candidates (spiral outward)
-            for ring in range(1, 5):
-                offset = ring * 2.0
-                candidates.append((plat_max_x + offset + quad_width / 2, plat_center_z, 10 + ring))
-                candidates.append((plat_min_x - offset - quad_width / 2, plat_center_z, 10 + ring + 5))
-                candidates.append((plat_center_x, plat_max_z + offset + quad_height / 2, 10 + ring + 10))
-                candidates.append((plat_center_x, plat_min_z - offset - quad_height / 2, 10 + ring + 15))
-                # Diagonal positions
-                candidates.append((plat_max_x + offset + quad_width / 2, plat_max_z + offset + quad_height / 2, 20 + ring))
-                candidates.append((plat_min_x - offset - quad_width / 2, plat_max_z + offset + quad_height / 2, 20 + ring + 5))
-                candidates.append((plat_max_x + offset + quad_width / 2, plat_min_z - offset - quad_height / 2, 20 + ring + 10))
-                candidates.append((plat_min_x - offset - quad_width / 2, plat_min_z - offset - quad_height / 2, 20 + ring + 15))
-
-            # Sort candidates by priority
-            candidates.sort(key=lambda x: x[2])
-
-            # Find best candidate position
-            best_pos = None
-            for cand_x, cand_z, _ in candidates:
-                label_rect = LabelRect(cand_x, cand_z, quad_width, quad_height)
-
-                # Check collision with platforms
-                collides_with_platform = False
-                for _, _, plat_pos in directories:
-                    plat_rect = LabelRect(
-                        (plat_pos.x + plat_pos.width) / 2,
-                        (plat_pos.z + plat_pos.depth) / 2,
-                        plat_pos.width + 0.3,
-                        plat_pos.depth + 0.3
-                    )
-                    if label_rect.collides_with(plat_rect):
-                        collides_with_platform = True
-                        break
-
-                if collides_with_platform:
-                    continue
-
-                # Check collision with other placed labels
-                collides_with_label = False
-                for placed_rect in placed_labels.values():
-                    if label_rect.collides_with(placed_rect):
-                        collides_with_label = True
-                        break
-
-                if not collides_with_label:
-                    best_pos = (cand_x, cand_z)
-                    break
-
-            # If no valid position found, use the right side with large offset
-            if best_pos is None:
-                best_pos = (plat_max_x + quad_width + 2.0, plat_center_z)
-
-            # Store the label position
-            placed_labels[path_str] = LabelRect(best_pos[0], best_pos[1], quad_width, quad_height)
-            label_positions[path_str] = (best_pos[0], best_pos[1], quad_width, quad_height)
-
-        return label_positions
+    def _update_ground_extent(self, positions: dict) -> None:
+        """Make the ground plane cover the whole layout (plus a wide margin)."""
+        if not positions:
+            self._ground_extent = (0.0, 0.0, 500.0)
+            self._scene_radius = 50.0
+            return
+        min_x = min(p.x for p in positions.values())
+        max_x = max(p.x + p.width for p in positions.values())
+        min_z = min(p.z for p in positions.values())
+        max_z = max(p.z + p.depth for p in positions.values())
+        self._scene_radius = math.hypot(max_x - min_x, max_z - min_z) / 2
+        half = max(max_x - min_x, max_z - min_z) * 1.5 + 400.0
+        self._ground_extent = ((min_x + max_x) / 2, (min_z + max_z) / 2, max(500.0, half))
+        # Let the orbit camera pull back far enough to see all of it
+        self.camera.max_orbit_distance = max(500.0, half * 1.5)
 
     # Bloom control methods
 

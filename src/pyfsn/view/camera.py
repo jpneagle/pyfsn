@@ -62,6 +62,9 @@ class Camera:
             np.linalg.norm(self._state.target - self._state.position)
         )
         
+        # Farthest the orbit camera may pull back (raised for wide landscapes)
+        self.max_orbit_distance = 500.0
+
         self._rotation_speed = 0.003
         self._zoom_speed = 0.1
         self._fly_speed = 0.5
@@ -173,7 +176,7 @@ class Camera:
             return
 
         self._orbit_distance *= 1.0 - delta * self._zoom_speed
-        self._orbit_distance = max(1.0, min(500.0, self._orbit_distance))
+        self._orbit_distance = max(1.0, min(self.max_orbit_distance, self._orbit_distance))
         self._update_position_from_orbit()
 
     def orbit_pan(self, dx: int, dy: int, view_width: int, view_height: int) -> None:
@@ -311,6 +314,33 @@ class Camera:
             # Clamp pitch to avoid gimbal lock (same as fly_look)
             max_pitch = math.radians(89.0)
             self._fly_pitch = max(-max_pitch, min(max_pitch, self._fly_pitch))
+
+    def translate(self, delta: np.ndarray) -> None:
+        """Move the camera and what it looks at by the same offset.
+
+        Works in both modes and keeps the viewing direction unchanged.
+        """
+        delta = np.asarray(delta, dtype=np.float32)
+        self._state.position = self._state.position + delta
+        self._state.target = self._state.target + delta
+
+    def ground_axes(self) -> tuple[np.ndarray, np.ndarray]:
+        """Get the horizontal forward and right unit vectors of the view."""
+        if self.mode == CameraMode.FLY:
+            forward = self._get_fly_front_vector().astype(np.float32)
+        else:
+            forward = (self._state.target - self._state.position).astype(np.float32)
+        forward[1] = 0.0
+        norm = float(np.linalg.norm(forward))
+        if norm < 1e-6:
+            # Looking straight down: fall back to the orbit yaw
+            forward = np.array(
+                [-math.sin(self._orbit_yaw), 0.0, -math.cos(self._orbit_yaw)], dtype=np.float32
+            )
+        else:
+            forward = forward / norm
+        right = np.array([-forward[2], 0.0, forward[0]], dtype=np.float32)
+        return forward, right
 
     def set_position_target(self, position: np.ndarray, target: np.ndarray) -> None:
         """Set camera position and target simultaneously.

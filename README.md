@@ -33,7 +33,13 @@ pyfsn はファイルシステムを没入感のある 3D 空間で可視化し�
 - **GPU アクセラレーション描画**: 互換性のための PyOpenGL（Legacy OpenGL 2.1）; ModernGL レンダラーも利用可能
 - **スポットライト付きリアルタイム検索**: 一致するノードをコーンスポットライトでハイライトする視覚的検索エフェクト
 - **高度なフィルタリング**: サイズ・日時・種類によるフィルタリング（コンテキスト保持）
-- **ワイヤー接続**: ディレクトリ間の親子関係を視覚化
+- **ワイヤー接続**: ディレクトリ間の親子関係を視覚化（ワイヤーをクリックしてその先のディレクトリを選択可能）
+- **fsn 式ツリーレイアウト**: サブディレクトリは親の奥に一列に並び、部分木ごとに幅を確保するため台座が重ならない
+- **単一ランドスケープ**: ディレクトリをクリックするとその場で読み込まれ、風景が広がる（再スキャンして作り直さない）
+- **中ボタン飛行**: 中ボタン（または Alt+左ドラッグ）で、押した位置からの距離に応じた速度で飛行
+- **高さモード**: None / Linear / Exaggerated / Log、台座の高さは Flat / Files Only / Including Children から選択
+- **ランドスケープ**: grass / ocean / desert / space / indigo の空と地面の配色
+- **枝刈り（Prune）**: 右クリックでディレクトリの中身を風景から隠す / 戻す
 - **ファイル年齢カラー**: 更新日時による色分け（SGI fsn スタイル）
 - **ファイルツリービュー**: 3D 可視化と並列した従来の階層ビュー
 - **メディアプレビュー**: 画像ファイルにホバーでサムネイル表示；動画ファイルは 4 シーンのダイジェスト再生（バックグラウンドスレッド）
@@ -45,7 +51,7 @@ pyfsn はファイルシステムを没入感のある 3D 空間で可視化し�
 - **ブックマーク**: よく使うディレクトリを保存して即ジャンプ（`Ctrl+D`）
 - **最近使用したディレクトリ**: 履歴から素早くディレクトリを再オープン
 - **テーマ切替メニュー**: View › Theme から SGI Classic / Dark / Cyberpunk など即時切替・自動保存
-- **View メニュー**: ファイルツリー・フィルターパネル・ラベル・ミニマップ・隠しファイル・色分けモードの切替
+- **View メニュー**: ファイルツリー・フィルターパネル・ラベル・ミニマップ・隠しファイル・色分けモード・高さモード・ランドスケープの切替、俯瞰ビュー
 - **色覚多様性パレット**: ファイル年齢色を識別しやすい配色に切替（View › Colorblind Palette）
 - **強化されたファイルツリー**: 変更日時カラム、人間可読なサイズ表示、右クリックコンテキストメニュー、多選択対応
 - **双方向多選択同期**: 3D ビューとファイルツリーの選択を相互に同期
@@ -127,7 +133,10 @@ python -m pyfsn ~
 | `path` | 可視化するルートディレクトリ | 前回使用したディレクトリ（なければカレント） |
 | `--renderer {auto,modern,legacy}` | 使用するレンダラー | `auto` |
 | `--max-depth N` | 可視化する最大深度 | `5` |
-| `--lazy-depth N` | 遅延読み込みを開始する深度 | `2` |
+| `--lazy-depth N` | 遅延読み込みを開始する深度（それより深いディレクトリはクリックで読み込み） | `2` |
+| `--height {none,linear,exaggerated,log}` | サイズと高さの対応（`exaggerated` は平方根、fsn 方式） | 前回の設定（なければ `exaggerated`） |
+| `--dir-height {flat,files,children}` | 台座の高さが表すもの（フラット / 直下のファイルのみ / サブディレクトリ込み） | 前回の設定（なければ `files`） |
+| `--landscape {grass,ocean,desert,space,indigo}` | 空と地面の配色 | 前回の設定（なければ `grass`） |
 | `--show-hidden` | 隠しファイル・ディレクトリ（`.` 始まり）を表示 | 非表示 |
 | `--color-mode {type,age}` | キューブの色分けモード（種類別 / 年齢別） | `age` |
 | `--msaa {0,2,4,8}` | マルチサンプルアンチエイリアスのサンプル数 | `4` |
@@ -160,15 +169,18 @@ pyfsn ウィンドウは以下で構成されます:
 |------|-----------|------|
 | **ディレクトリ** | 大きなプラットフォーム（青） | フォルダ/ディレクトリ |
 | **ファイル** | プラットフォーム上のキューブ | ファイル |
-| **キューブの高さ** | ファイルサイズに比例 | 大きいファイル = 高いキューブ |
+| **キューブの高さ** | ファイルサイズ（View › Height で方式を選択） | 大きいファイル = 高いキューブ |
+| **台座の高さ** | ディレクトリ直下のファイルの合計サイズ（View › Directory Height で変更可） | 中身が大きいディレクトリ = 高い台座 |
+| **灰色の台座** | まだ読み込まれていないディレクトリ | クリックすると読み込まれて風景が広がる |
+| **紫がかった台座** | 枝刈り（Prune）されたディレクトリ | 右クリック › Restore で元に戻す |
 | **キューブの色** | ファイルの年齢（SGI fsn スタイル） | 緑=24時間以内、シアン=7日以内、黄=30日以内、橙=365日以内、茶=365日以上 |
 | **種別カラー** | ファイルカテゴリによる色分け | 画像=ピンク、動画=赤、音声=橙、ドキュメント=黄、コード=緑、アーカイブ=茶、データ=青、その他=灰 |
 | **ワイヤーの色** | 白いライン | 親子ディレクトリの接続 |
 | **黄色いグロウ** | 選択アイテム | 現在選択中のファイル/フォルダ |
-| **ハイライトされたワイヤー** | 黄色の太いライン | 選択ノードへの/からの接続 |
+| **ハイライトされたワイヤー** | 黄色の太いライン | 選択したディレクトリへ至る接続 |
 | **ファイルのダブルクリック** | デフォルトアプリで開く | システムデフォルトアプリでファイルを開く |
 | **ディレクトリ名（地面）** | 地面上の手書きテキスト | SGI fsn スタイルのディレクトリラベル |
-| **ファイル名** | 常に表示 | ファイルの隣に表示されるファイル名 |
+| **ファイル名** | カメラの近くのみ表示 | ファイルの隣に表示されるファイル名 |
 | **画像/動画にホバー** | サムネイル付きツールチップ | 画像はサムネイル、動画はダイナミックシーン再生 |
 
 ### コントロール一覧
@@ -179,11 +191,14 @@ pyfsn ウィンドウは以下で構成されます:
 | **左ドラッグ** | カメラを回転 |
 | **右ドラッグ** | カメラをパン |
 | **Shift+左ドラッグ** | カメラをパン（macOS トラックパッド代替） |
-| **中ボタンドラッグ** | カメラをパン |
+| **中ボタンドラッグ / Alt+左ドラッグ** | 飛行（押した位置から離すほど速い。上下=前後、左右=横移動） |
+| **Shift+中ボタンドラッグ** | 前進しながら降下 / 後退しながら上昇 |
 | **スクロールホイール** | ズームイン/アウト |
-| **クリック** | ノードを選択 |
-| **ディレクトリをダブルクリック** | ディレクトリに移動（カレントディレクトリ変更） |
+| **クリック** | ノードを選択してズーム（未読み込みのディレクトリは読み込む） |
+| **ワイヤーをクリック** | その先のディレクトリを選択（選択済みなら親へ） |
+| **ディレクトリをダブルクリック** | ディレクトリにクローズアップ |
 | **ファイルをダブルクリック** | デフォルトアプリでファイルを開く |
+| **ディレクトリを右クリック › Set as Root** | そのディレクトリをルートにして表示し直す |
 
 #### マウスコントロール - 3D ビュー（フライモード）
 | 操作 | アクション |
@@ -191,7 +206,7 @@ pyfsn ウィンドウは以下で構成されます:
 | **左ドラッグ** | 見回す（視点を回転） |
 | **右ドラッグ** | 見回す（視点を回転） |
 | **クリック** | ノードを選択 |
-| **ディレクトリをダブルクリック** | ディレクトリに移動 |
+| **ディレクトリをダブルクリック** | ディレクトリにクローズアップ |
 | **ファイルをダブルクリック** | デフォルトアプリでファイルを開く |
 
 #### マウスコントロール - ファイルツリー
@@ -200,7 +215,7 @@ pyfsn ウィンドウは以下で構成されます:
 | **クリック** | アイテムを選択して 3D ビューでナビゲート |
 | **Ctrl/Cmd+クリック** | 複数アイテムを選択 |
 | **Shift+クリック** | 範囲選択 |
-| **ダブルクリック** | ファイルを開く / ディレクトリに移動 |
+| **ダブルクリック** | ファイルを開く |
 | **右クリック** | コンテキストメニュー（3D で表示 / 開く / 名前変更 / ゴミ箱へ） |
 
 #### キーボードコントロール - フライモード（フライモード有効時）
@@ -222,7 +237,8 @@ pyfsn ウィンドウは以下で構成されます:
 | `Alt+←` / `Alt+→` | 履歴を戻る / 進む |
 | `Alt+↑` / `Backspace` | 親ディレクトリへ移動 |
 | `Ctrl+D` | 現在のディレクトリをブックマーク |
-| `Home` | カメラビューをリセット |
+| `Home` | カメラを正面ビューに戻す（ルートとその1段目） |
+| `Ctrl+B` | 俯瞰ビュー（Bird's Eye View） |
 | `F` | フライモードの切り替え |
 | `Esc` | 検索クリア / 選択解除 |
 | `Ctrl+T` | ファイルツリーパネルの切り替え |
@@ -285,12 +301,12 @@ pyfsn ウィンドウは以下で構成されます:
 pyfsn は 2 種類のラベルを表示します:
 
 **ディレクトリ名**（常に表示）:
-- プラットフォームの隣の地面に手書きスタイルで表示（SGI fsn スタイル）
-- 重複を避けるよう自動配置
+- プラットフォームの手前の地面に手書きスタイルで表示（SGI fsn スタイル）
+- ワイヤーの右側に固定配置され、隣と重ならない幅に自動で縮小
 - Ctrl+L の切り替えに影響されない
 
 **ファイル名**（`Ctrl+L` で切り替え）:
-- 3D ビューのファイルキューブの隣に表示
+- 3D ビューのファイルキューブの隣に表示（カメラの近くにあるファイルのみ、最大 150 件）
 - フォーカスされたノードは大きなテキストでハイライト
 - カメラ移動に合わせて自動的に位置を更新
 
@@ -341,7 +357,8 @@ pyfsn/
 ├── tests/
 │   ├── test_spotlight.py      # スポットライト機能ユニットテスト
 │   ├── test_spotlight_demo.py # スポットライトインタラクティブデモ
-│   └── test_ux_improvements.py # UX 強化機能のユニットテスト
+│   ├── test_ux_improvements.py # UX 強化機能のユニットテスト
+│   └── test_layout_engine.py  # ツリーレイアウトのユニットテスト
 └── docs/
     ├── API.md               # API ドキュメント
     ├── SPEC.md              # 技術仕様書（日本語）
@@ -356,19 +373,21 @@ pyfsn/
 
 ### ベンチマーク
 
-| ファイル数 | FPS（平均） | 読み込み時間 |
-|-----------|-----------|------------|
-| 1,000 | 60 | 1秒未満 |
-| 10,000 | 45-60 | 2-3秒 |
-| 100,000 | 30-45 | 10-15秒 |
+| ファイル数 | FPS | 1フレームの描画時間 | 読み込み時間（起動〜最初の描画） |
+|-----------|-----|------------------|------------------------------|
+| 1,000 | 60（上限） | 約 1 ms | 約 0.2 秒 |
+| 10,000 | 60（上限） | 約 2 ms | 約 0.7 秒 |
+| 100,000 | 60（上限） | 約 12 ms | 約 6 秒 |
+
+測定条件（2026-11-26、各 1 回）: MacBook Pro（Apple M5）、1400×900 のウィンドウ、1 ディレクトリ 100 ファイルの 2 階層ツリー、既定の設定。FPS は 16 ms の描画タイマーで 60 が上限です。10 万ファイルではホバーやクリックの当たり判定に 1 回 0.1 秒ほどかかり、マウス操作に引っかかりが出ます。
 
 ### 最適化機能
 
-- **PyOpenGL レガシーモード**: 互換性のためのイミディエートモード描画
+- **PyOpenGL レガシーモード**: 互換性のための OpenGL 2.1。キューブは頂点配列でまとめて描画（検索スポットライト中のみ1個ずつ描画）
 - **フラスタムカリング**: `paintGL()` でカメラ更新と `is_node_visible()` チェックに使用
 - **Level of Detail (LOD)**: 距離ベースのエッジ描画スキップと小キューブカリング（部分的に実装）
 - **プログレッシブローディング**: バッチローディングユーティリティ（実装済み、レンダラーへの接続は未完了）
-- **ワイヤー接続ハイライト**: 選択した接続のみハイライト
+- **ワイヤー接続ハイライト**: 選択したディレクトリへ至る接続のみハイライト
 - **衝突判定**: フライモードでの AABB ベース衝突（地面、プラットフォーム、ファイルキューブ）
 
 ## 開発
@@ -430,6 +449,7 @@ pyfsn は Model-View-Controller (MVC) パターンに従います:
 │ Ctrl+L      ラベルの切り替え                              │
 │ Ctrl+H      隠しファイルの表示切替                         │
 │ Ctrl+M      ミニマップの表示切替                           │
+│ Ctrl+B      俯瞰ビュー                                    │
 │ F1          キーボードショートカットチートシート            │
 │ F5          更新                                         │
 │ Ctrl+Q      終了                                         │
@@ -511,8 +531,8 @@ sudo python -m pyfsn  # Linux/macOS の場合
 
 **解決策**:
 1. ラベルが有効であることを確認: Ctrl+L を押して切り替え
-2. 一部のラベルは衝突判定により非表示になる場合がある
-3. ズームアウトして、さらに遠くに配置されたラベルを確認
+2. ファイル名はカメラの近くにあるものだけ表示される。ファイルに近づいて確認
+3. ディレクトリ名は台座の手前の地面にある。狭い場所では小さく表示される
 
 ### パフォーマンスのヒント
 
@@ -575,7 +595,13 @@ pyfsn provides an immersive 3D visualization of your file system. Directories ap
 - **GPU-Accelerated Rendering**: PyOpenGL (Legacy OpenGL 2.1) for compatibility; ModernGL renderer also available
 - **Real-time Search with Spotlight**: Visual search effects that highlight matching nodes with cone spotlights
 - **Advanced Filtering**: Filter by size, age, and type with context preservation
-- **Wire Connections**: Visual parent-child relationships between directories
+- **Wire Connections**: Visual parent-child relationships between directories (click a wire to select the directory it leads to)
+- **fsn-style Tree Layout**: Sub-directories form a row behind their parent and every sub-tree owns its own strip of ground, so pedestals never overlap
+- **Single Landscape**: Clicking a directory loads it in place and the landscape grows (no rescan / rebuild)
+- **Middle-button Flight**: Hold the middle button (or Alt+left-drag) to fly at a speed set by the distance from the press point
+- **Height Modes**: None / Linear / Exaggerated / Log, and pedestal height as Flat / Files Only / Including Children
+- **Landscapes**: grass / ocean / desert / space / indigo sky and ground colours
+- **Prune**: Hide (and restore) the contents of a directory from the right-click menu
 - **File Age Colors**: Color-coded by modification time (SGI fsn style)
 - **File Tree View**: Traditional hierarchical view alongside 3D visualization
 - **Media Previews**: Hover over image files for thumbnails; video files show dynamic 4-scene digest playback (background threaded)
@@ -583,7 +609,7 @@ pyfsn provides an immersive 3D visualization of your file system. Directories ap
 - **Bloom & Emissive Effects**: File type-based glow effects and animated wire pulses
 - **2D Mini Map**: Radar-style overview of the 3D scene (toggle via View menu)
 - **Recent Directories**: Quickly reopen recently used directories
-- **View Menu**: Toggle file tree, filter panel, labels, mini map, hidden files, and color mode
+- **View Menu**: Toggle file tree, filter panel, labels, mini map, hidden files, color mode, height modes and landscape; Bird's Eye View
 - **Enhanced File Tree**: Modified column, human-readable sizes, right-click context menu, and multi-selection
 - **Bidirectional Multi-Selection Sync**: Sync selections between 3D view and file tree in both directions
 - **Enhanced Type Color Mode**: 8 category colors with File Type Legend (image, video, audio, document, code, archive, data, other)
@@ -661,7 +687,10 @@ python -m pyfsn ~
 | `path` | Root directory to visualize | Last used directory (or current) |
 | `--renderer {auto,modern,legacy}` | Renderer to use | `auto` |
 | `--max-depth N` | Maximum depth to visualize | `5` |
-| `--lazy-depth N` | Depth at which lazy loading starts | `2` |
+| `--lazy-depth N` | Depth at which lazy loading starts (deeper directories load when clicked) | `2` |
+| `--height {none,linear,exaggerated,log}` | How size maps to height (`exaggerated` = square root, as in fsn) | Last used (or `exaggerated`) |
+| `--dir-height {flat,files,children}` | What pedestal height stands for (flat / files directly inside / including sub-directories) | Last used (or `files`) |
+| `--landscape {grass,ocean,desert,space,indigo}` | Sky and ground colours | Last used (or `grass`) |
 | `--show-hidden` | Show hidden files and directories (starting with `.`) | Hidden |
 | `--color-mode {type,age}` | Cube color mode (by file type / by age) | `age` |
 | `--msaa {0,2,4,8}` | Multisample anti-aliasing samples | `4` |
@@ -694,15 +723,18 @@ The pyfsn window consists of:
 |---------|---------------------|---------|
 | **Directory** | Large platform (blue) | A folder/directory |
 | **File** | Cube on platform | A file |
-| **Cube Height** | Proportional to file size | Larger files = taller cubes |
+| **Cube Height** | File size (method chosen in View › Height) | Larger files = taller cubes |
+| **Pedestal Height** | Total size of the files directly inside (changeable in View › Directory Height) | Bigger contents = taller pedestal |
+| **Gray Pedestal** | Directory that has not been loaded yet | Click it to load it and grow the landscape |
+| **Purple-gray Pedestal** | Pruned directory | Right-click › Restore to bring it back |
 | **Cube Color** | By file age (SGI fsn style) | Green=&lt;24h, Cyan=&lt;7d, Yellow=&lt;30d, Orange=&lt;365d, Brown≥365d |
 | **Type Color** | By file category | Image=pink, Video=red, Audio=orange, Document=yellow, Code=green, Archive=brown, Data=blue, Other=gray |
 | **Wire Color** | White lines | Parent-child directory connections |
 | **Yellow Glow** | Selected item | Currently selected file/folder |
-| **Highlighted Wire** | Yellow thick lines | Connections to/from selected nodes |
+| **Highlighted Wire** | Yellow thick lines | The connection leading to a selected directory |
 | **Double-click File** | Opens in default app | Open file with system default application |
 | **Directory Name (Ground)** | Handwritten text on ground | SGI fsn style directory label |
-| **File Names** | Always visible | File names shown next to files |
+| **File Names** | Near the camera only | File names shown next to files |
 | **Hover Image/Video** | Tooltip with preview | Shows thumbnail for images, dynamic scene playback for videos |
 
 ### Controls Reference
@@ -713,11 +745,14 @@ The pyfsn window consists of:
 | **Left-drag** | Rotate camera |
 | **Right-drag** | Pan camera |
 | **Shift+Left-drag** | Pan camera (macOS trackpad alternative) |
-| **Middle-drag** | Pan camera |
+| **Middle-drag / Alt+Left-drag** | Fly (faster the farther from the press point; up/down = forward/back, left/right = sideways) |
+| **Shift+Middle-drag** | Descend while moving forward / climb while moving backward |
 | **Scroll wheel** | Zoom in/out |
-| **Click** | Select node |
-| **Double-click directory** | Navigate to directory (change current directory) |
+| **Click** | Select node and zoom to it (loads a directory that is not loaded yet) |
+| **Click a wire** | Select the directory it leads to (its parent if already selected) |
+| **Double-click directory** | Close-up of the directory |
 | **Double-click file** | Open file with default application |
+| **Right-click directory › Set as Root** | Rebuild the view with that directory as the root |
 
 #### Mouse Controls - 3D View (Fly Mode)
 | Action | Operation |
@@ -725,7 +760,7 @@ The pyfsn window consists of:
 | **Left-drag** | Look around (rotate view) |
 | **Right-drag** | Look around (rotate view) |
 | **Click** | Select node |
-| **Double-click directory** | Navigate to directory |
+| **Double-click directory** | Close-up of the directory |
 | **Double-click file** | Open file with default application |
 
 #### Mouse Controls - File Tree
@@ -734,7 +769,7 @@ The pyfsn window consists of:
 | **Click** | Select and navigate to item |
 | **Ctrl/Cmd+Click** | Add/remove item from multi-selection |
 | **Shift+Click** | Select a range of items |
-| **Double-click** | Open file / Navigate to directory |
+| **Double-click** | Open file |
 | **Right-click** | Context menu (Reveal in 3D / Open / Rename / Move to Trash) |
 
 #### Keyboard Controls - Fly Mode (when Fly Mode is active)
@@ -755,6 +790,8 @@ The pyfsn window consists of:
 | `Ctrl+T` | Toggle file tree panel |
 | `Ctrl+F` | Toggle filter panel |
 | `Ctrl+L` | Toggle file name labels |
+| `Home` | Reset camera to the front view (the root and its first row) |
+| `Ctrl+B` | Bird's eye view |
 | `F5` | Refresh current view |
 | `Ctrl+Q` | Exit application |
 
@@ -812,12 +849,12 @@ Provides advanced filtering by name, size, age, and type:
 pyfsn displays labels in two ways:
 
 **Directory Names** (always visible):
-- Displayed on the ground next to platforms in handwritten style (SGI fsn style)
-- Automatically positioned to avoid overlapping
+- Displayed on the ground in front of platforms in handwritten style (SGI fsn style)
+- Placed to the right of the wire and shrunk to fit, so neighbours never overlap
 - Not affected by Ctrl+L toggle
 
 **File Names** (toggle with `Ctrl+L`):
-- Shown next to file cubes in the 3D view
+- Shown next to file cubes in the 3D view (only files near the camera, up to 150)
 - Focused node highlighted with larger text
 - Automatic position updates as camera moves
 
@@ -868,7 +905,8 @@ pyfsn/
 ├── tests/
 │   ├── test_spotlight.py    # Spotlight feature unit tests
 │   ├── test_spotlight_demo.py # Spotlight interactive demo
-│   └── test_ux_improvements.py # UX improvement unit tests
+│   ├── test_ux_improvements.py # UX improvement unit tests
+│   └── test_layout_engine.py  # Tree layout unit tests
 └── docs/
     ├── API.md               # API documentation
     ├── SPEC.md              # Technical specifications (Japanese)
@@ -883,19 +921,21 @@ pyfsn/
 
 ### Benchmarks
 
-| File Count | FPS (Avg) | Load Time |
-|------------|-----------|-----------|
-| 1,000 | 60 | < 1s |
-| 10,000 | 45-60 | 2-3s |
-| 100,000 | 30-45 | 10-15s |
+| File Count | FPS | Draw Time per Frame | Load Time (launch to first frame) |
+|------------|-----|---------------------|-----------------------------------|
+| 1,000 | 60 (cap) | ~1 ms | ~0.2 s |
+| 10,000 | 60 (cap) | ~2 ms | ~0.7 s |
+| 100,000 | 60 (cap) | ~12 ms | ~6 s |
+
+Measured on 2026-11-26 (one run each): MacBook Pro (Apple M5), 1400×900 window, a two-level tree with 100 files per directory, default settings. FPS is capped at 60 by the 16 ms render timer. At 100,000 files, hover and click picking take about 0.1 s each, so mouse interaction stutters.
 
 ### Optimization Features
 
-- **PyOpenGL Legacy Mode**: Immediate mode rendering for compatibility
+- **PyOpenGL Legacy Mode**: OpenGL 2.1 for compatibility. Cubes are drawn in batches from vertex arrays (one by one only while a search spotlight is active)
 - **Frustum Culling**: Used in `paintGL()` for camera updates and `is_node_visible()` checks
 - **Level of Detail (LOD)**: Distance-based edge rendering skip and small cube culling (partially wired)
 - **Progressive Loading**: Utility for batch loading (implemented, not yet wired to renderer)
-- **Wire Connection Highlighting**: Only highlight selected connections
+- **Wire Connection Highlighting**: Only the connection leading to a selected directory is highlighted
 - **Collision Detection**: AABB-based collision for Fly mode (ground, platforms, file cubes)
 
 ## Development
@@ -957,6 +997,7 @@ See [docs/ADVANCED_EFFECTS.md](docs/ADVANCED_EFFECTS.md) for bloom/emissive/wire
 │ Ctrl+L      Toggle labels                               │
 │ Ctrl+H      Toggle hidden files                         │
 │ Ctrl+M      Toggle mini map                             │
+│ Ctrl+B      Bird's eye view                             │
 │ F1          Keyboard shortcuts cheatsheet               │
 │ F5          Refresh                                     │
 │ Ctrl+Q      Exit                                        │
@@ -1038,8 +1079,8 @@ sudo python -m pyfsn  # On Linux/macOS
 
 **Solutions**:
 1. Check that labels are enabled: Press Ctrl+L to toggle
-2. Some labels may be hidden due to collision detection
-3. Try zooming out to see labels positioned further away
+2. File names are only shown for files near the camera: move closer to the files
+3. Directory names are on the ground in front of each pedestal and shrink in tight spots
 
 ### Performance Tips
 
@@ -1102,7 +1143,13 @@ pyfsn 提供沉浸式 3D 文件系统可视化。目录显示为平台，文件�
 - **GPU 加速渲染**：PyOpenGL（传统 OpenGL 2.1）保证兼容性；同时提供 ModernGL 渲染器
 - **实时搜索与聚光灯**：使用锥形聚光灯高亮匹配节点的视觉搜索效果
 - **高级过滤**：按大小、时间、类型过滤，保留上下文
-- **连线连接**：目录间父子关系的可视化表示
+- **连线连接**：目录间父子关系的可视化表示（点击连线可选择其通向的目录）
+- **fsn 式树形布局**：子目录在父目录后方排成一行，每棵子树占有独立的地面带，底座互不重叠
+- **单一场景**：点击目录即在原地加载并扩展场景（无需重新扫描重建）
+- **中键飞行**：按住中键（或 Alt+左键拖拽），以离按下位置的距离决定速度飞行
+- **高度模式**：None / Linear / Exaggerated / Log；底座高度可选 Flat / Files Only / Including Children
+- **地景**：grass / ocean / desert / space / indigo 天空与地面配色
+- **剪枝（Prune）**：通过右键菜单隐藏/恢复目录内容
 - **文件年龄颜色**：按修改时间进行颜色编码（SGI fsn 风格）
 - **文件树视图**：与 3D 可视化并排的传统层级视图
 - **媒体预览**：悬停在图像文件上显示缩略图；视频文件显示动态 4 场景摘要播放（后台线程）
@@ -1110,7 +1157,7 @@ pyfsn 提供沉浸式 3D 文件系统可视化。目录显示为平台，文件�
 - **泛光与发光效果**：基于文件类型的辉光效果和动画连线脉冲
 - **2D 小地图**：3D 场景的雷达风格概览（通过 View 菜单切换显示）
 - **最近使用目录**：从 Recent 菜单快速重新打开最近使用的目录
-- **View 菜单**：切换文件树、过滤面板、标签、小地图、隐藏文件和着色模式
+- **View 菜单**：切换文件树、过滤面板、标签、小地图、隐藏文件、着色模式、高度模式和地景；鸟瞰视图
 - **增强文件树**：新增修改日期列、人可读大小、右键上下文菜单和多选支持
 - **双向多选同步**：3D 视图与文件树的选择相互同步
 - **增强类型着色模式**：8 类别颜色区分并显示图例（图像、视频、音频、文档、代码、压缩包、数据、其他）
@@ -1188,7 +1235,10 @@ python -m pyfsn ~
 | `path` | 要可视化的根目录 | 上次使用的目录（否则为当前目录） |
 | `--renderer {auto,modern,legacy}` | 使用的渲染器 | `auto` |
 | `--max-depth N` | 可视化的最大深度 | `5` |
-| `--lazy-depth N` | 开始延迟加载的深度 | `2` |
+| `--lazy-depth N` | 开始延迟加载的深度（更深的目录在点击时加载） | `2` |
+| `--height {none,linear,exaggerated,log}` | 大小与高度的对应方式（`exaggerated` 为平方根，fsn 方式） | 上次的设置（否则为 `exaggerated`） |
+| `--dir-height {flat,files,children}` | 底座高度的含义（平坦 / 仅目录内文件 / 包含子目录） | 上次的设置（否则为 `files`） |
+| `--landscape {grass,ocean,desert,space,indigo}` | 天空与地面的配色 | 上次的设置（否则为 `grass`） |
 | `--show-hidden` | 显示隐藏文件和目录（以 `.` 开头） | 隐藏 |
 | `--color-mode {type,age}` | 立方体配色模式（按类型 / 按年龄） | `age` |
 | `--msaa {0,2,4,8}` | 多重采样抗锯齿采样数 | `4` |
@@ -1221,15 +1271,18 @@ pyfsn 窗口由以下部分组成：
 |------|---------|------|
 | **目录** | 大型平台（蓝色） | 文件夹/目录 |
 | **文件** | 平台上的方块 | 文件 |
-| **方块高度** | 与文件大小成比例 | 文件越大 = 方块越高 |
+| **方块高度** | 文件大小（在 View › Height 中选择方式） | 文件越大 = 方块越高 |
+| **底座高度** | 目录内文件的总大小（可在 View › Directory Height 中更改） | 内容越大 = 底座越高 |
+| **灰色底座** | 尚未加载的目录 | 点击即可加载并扩展场景 |
+| **紫灰色底座** | 已剪枝（Prune）的目录 | 右键 › Restore 恢复 |
 | **方块颜色** | 按文件年龄（SGI fsn 风格） | 绿=24小时内，青=7天内，黄=30天内，橙=365天内，棕≥365天 |
 | **类型颜色** | 按文件类别 | 图像=粉色，视频=红色，音频=橙色，文档=黄色，代码=绿色，压缩包=棕色，数据=蓝色，其他=灰色 |
 | **连线颜色** | 白色线条 | 父子目录连接 |
 | **黄色辉光** | 选中项目 | 当前选中的文件/文件夹 |
-| **高亮连线** | 黄色粗线 | 与选中节点的连接 |
+| **高亮连线** | 黄色粗线 | 通向选中目录的连接 |
 | **双击文件** | 用默认应用打开 | 用系统默认应用程序打开文件 |
 | **目录名（地面）** | 地面上的手写文字 | SGI fsn 风格的目录标签 |
-| **文件名** | 始终可见 | 文件旁边显示的文件名 |
+| **文件名** | 仅在摄像机附近显示 | 文件旁边显示的文件名 |
 | **悬停图像/视频** | 带预览的工具提示 | 图像显示缩略图，视频显示动态场景播放 |
 
 ### 操作参考
@@ -1240,11 +1293,14 @@ pyfsn 窗口由以下部分组成：
 | **左键拖拽** | 旋转摄像机 |
 | **右键拖拽** | 平移摄像机 |
 | **Shift+左键拖拽** | 平移摄像机（macOS 触控板替代方案） |
-| **中键拖拽** | 平移摄像机 |
+| **中键拖拽 / Alt+左键拖拽** | 飞行（离按下位置越远越快；上下=前后，左右=横移） |
+| **Shift+中键拖拽** | 前进时下降 / 后退时上升 |
 | **滚轮** | 缩放 |
-| **点击** | 选择节点 |
-| **双击目录** | 进入目录（更改当前目录） |
+| **点击** | 选择节点并拉近（未加载的目录会被加载） |
+| **点击连线** | 选择连线通向的目录（已选中则选择其父目录） |
+| **双击目录** | 拉近到该目录 |
 | **双击文件** | 用默认应用打开文件 |
+| **右键目录 › Set as Root** | 以该目录为根重新显示 |
 
 #### 鼠标控制 - 3D 视图（飞行模式）
 | 操作 | 功能 |
@@ -1252,7 +1308,7 @@ pyfsn 窗口由以下部分组成：
 | **左键拖拽** | 环顾四周（旋转视角） |
 | **右键拖拽** | 环顾四周（旋转视角） |
 | **点击** | 选择节点 |
-| **双击目录** | 进入目录 |
+| **双击目录** | 拉近到该目录 |
 | **双击文件** | 用默认应用打开文件 |
 
 #### 鼠标控制 - 文件树
@@ -1261,7 +1317,7 @@ pyfsn 窗口由以下部分组成：
 | **点击** | 选择并在 3D 视图中定位 |
 | **Ctrl/Cmd+点击** | 多选添加/移除 |
 | **Shift+点击** | 范围选择 |
-| **双击** | 打开文件 / 进入目录 |
+| **双击** | 打开文件 |
 | **右键** | 上下文菜单（在 3D 中显示 / 打开 / 重命名 / 移入废纸篓） |
 
 #### 键盘控制 - 飞行模式（飞行模式激活时）
@@ -1282,6 +1338,8 @@ pyfsn 窗口由以下部分组成：
 | `Ctrl+T` | 切换文件树面板 |
 | `Ctrl+F` | 切换过滤面板 |
 | `Ctrl+L` | 切换文件名标签 |
+| `Home` | 将摄像机重置为正面视图（根目录及其第一行） |
+| `Ctrl+B` | 鸟瞰视图 |
 | `F5` | 刷新当前视图 |
 | `Ctrl+Q` | 退出应用程序 |
 
@@ -1339,12 +1397,12 @@ pyfsn 窗口由以下部分组成：
 pyfsn 以两种方式显示标签：
 
 **目录名称**（始终可见）：
-- 以手写风格显示在平台旁边的地面上（SGI fsn 风格）
-- 自动定位以避免重叠
+- 以手写风格显示在平台前方的地面上（SGI fsn 风格）
+- 固定在连线右侧，并自动缩小以免与相邻标签重叠
 - 不受 Ctrl+L 切换影响
 
 **文件名**（使用 `Ctrl+L` 切换）：
-- 在 3D 视图中显示在文件方块旁边
+- 在 3D 视图中显示在文件方块旁边（仅摄像机附近的文件，最多 150 个）
 - 焦点节点以更大文字高亮
 - 随摄像机移动自动更新位置
 
@@ -1395,7 +1453,8 @@ pyfsn/
 ├── tests/
 │   ├── test_spotlight.py    # 聚光灯功能单元测试
 │   ├── test_spotlight_demo.py # 聚光灯交互演示
-│   └── test_ux_improvements.py # UX 改进单元测试
+│   ├── test_ux_improvements.py # UX 改进单元测试
+│   └── test_layout_engine.py  # 树形布局单元测试
 └── docs/
     ├── API.md               # API 文档
     ├── SPEC.md              # 技术规格说明（日语）
@@ -1410,19 +1469,21 @@ pyfsn/
 
 ### 基准测试
 
-| 文件数量 | FPS（平均） | 加载时间 |
-|---------|-----------|---------|
-| 1,000 | 60 | < 1秒 |
-| 10,000 | 45-60 | 2-3秒 |
-| 100,000 | 30-45 | 10-15秒 |
+| 文件数量 | FPS | 每帧绘制时间 | 加载时间（启动到首帧） |
+|---------|-----|------------|---------------------|
+| 1,000 | 60（上限） | 约 1 ms | 约 0.2 秒 |
+| 10,000 | 60（上限） | 约 2 ms | 约 0.7 秒 |
+| 100,000 | 60（上限） | 约 12 ms | 约 6 秒 |
+
+测量条件（2026-11-26，各 1 次）：MacBook Pro（Apple M5），1400×900 窗口，每个目录 100 个文件的两层目录树，默认设置。FPS 受 16 ms 渲染定时器限制，上限为 60。在 10 万个文件时，悬停和点击的拾取每次约需 0.1 秒，鼠标操作会有卡顿。
 
 ### 优化功能
 
-- **PyOpenGL 传统模式**：即时模式渲染保证兼容性
+- **PyOpenGL 传统模式**：使用 OpenGL 2.1 保证兼容性。方块通过顶点数组批量绘制（仅在搜索聚光灯激活时逐个绘制）
 - **视锥体裁剪**：在 `paintGL()` 中用于摄像机更新和 `is_node_visible()` 检查
 - **细节层次（LOD）**：基于距离的边缘渲染跳过和小方块裁剪（部分实现）
 - **渐进加载**：批量加载实用工具（已实现，尚未连接到渲染器）
-- **连线高亮**：仅高亮选中的连接
+- **连线高亮**：仅高亮通向选中目录的连接
 - **碰撞检测**：飞行模式的 AABB 碰撞（地面、平台、文件方块）
 
 ## 开发
@@ -1484,6 +1545,7 @@ pyfsn 遵循模型-视图-控制器（MVC）模式：
 │ Ctrl+L      切换标签                                     │
 │ Ctrl+H      切换隐藏文件                                  │
 │ Ctrl+M      切换小地图                                    │
+│ Ctrl+B      鸟瞰视图                                      │
 │ F1          键盘快捷键速查表                              │
 │ F5          刷新                                         │
 │ Ctrl+Q      退出                                         │
@@ -1565,8 +1627,8 @@ sudo python -m pyfsn  # 在 Linux/macOS 上
 
 **解决方案**：
 1. 检查标签是否启用：按 Ctrl+L 切换
-2. 某些标签可能因碰撞检测而隐藏
-3. 尝试缩小查看位置更远的标签
+2. 文件名仅对摄像机附近的文件显示：请靠近文件查看
+3. 目录名称位于各底座前方的地面上，在狭窄处会缩小显示
 
 ### 性能提示
 

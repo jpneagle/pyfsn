@@ -84,8 +84,15 @@ class Node:
         else:
             node_type = NodeType.FILE
 
+        # A symlink keeps its own location: resolving it would give it the
+        # same path (and so the same identity) as its target
+        if node_type == NodeType.SYMLINK:
+            node_path = path.parent.resolve() / path.name
+        else:
+            node_path = path.resolve()
+
         return cls(
-            path=path.resolve(),
+            path=node_path,
             name=path.name,
             size=size,
             type=node_type,
@@ -252,6 +259,16 @@ class Node:
         if self.is_file:
             return self.size
         return sum(child.total_size for child in self.children)
+
+    @property
+    def files_size(self) -> int:
+        """Get the size of the files directly inside this directory.
+
+        Sub-directories are not counted (fsn "Files Only" directory height).
+        """
+        if not self.is_directory:
+            return self.size
+        return sum(child.size for child in self.children if not child.is_directory)
 
     @property
     def file_count(self) -> int:

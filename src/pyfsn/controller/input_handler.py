@@ -134,6 +134,15 @@ class InputHandler:
         # Key tracking
         self._keys_pressed: set[int] = set()
 
+        # Node hit by the most recent left press (target of a double-click)
+        self._last_press_node: Node | None = None
+
+        # fsn-style flight: hold the middle button (or Alt+left on a trackpad)
+        # and move the mouse away from where it was pressed to pick a velocity
+        self._flight_origin: QPoint | None = None
+        self._flight_button: MouseButton | None = None
+        self.flight_speed = 0.7  # Like fsn's mouseSpeed resource (arbitrary units)
+
     # Public API
 
     def set_scene_data(self, nodes: dict[str, Node], positions: dict[str, object]) -> None:
@@ -219,10 +228,29 @@ class InputHandler:
         button = MouseButton(event.button())
         self._state.mouse_pressed.add(button)
         self._state.mouse_drag_start = event.pos()
+        # Drag deltas are measured from here, not from the last hover position
+        self._state.last_mouse_position = event.pos()
+
+        if button == MouseButton.LEFT:
+            self._last_press_node = None
+
+        # Middle button, or Alt+left for trackpads: start flying
+        if button == MouseButton.MIDDLE or (
+            button == MouseButton.LEFT and self._state.alt_pressed
+        ):
+            self._flight_origin = event.pos()
+            self._flight_button = button
+            # A running zoom animation would fight with the flight
+            if hasattr(self._renderer, "_is_animating"):
+                self._renderer._is_animating = False
+            return True
 
         # Check for node click
         if button == MouseButton.LEFT:
             node = self._raycast_find_node(event.pos())
+            if node is None:
+                node = self._pick_wire_node(event.pos())
+            self._last_press_node = node
             if node:
                 self._handle_node_click(node, False)
                 return True
@@ -251,6 +279,12 @@ class InputHandler:
         button = MouseButton(event.button())
         if button in self._state.mouse_pressed:
             self._state.mouse_pressed.remove(button)
+
+        if self._flight_origin is not None and button == self._flight_button:
+            self._flight_origin = None
+            self._flight_button = None
+            self._state.is_dragging = False
+            return True
 
         # Check for click (not drag)
         if button == MouseButton.LEFT:
@@ -285,6 +319,13 @@ class InputHandler:
 
         dx = event.pos().x() - self._state.last_mouse_position.x()
         dy = event.pos().y() - self._state.last_mouse_position.y()
+        # Deltas are per event; remember the position before any early return
+        self._state.last_mouse_position = event.pos()
+        self._state.mouse_position = event.pos()
+
+        # Flying: velocity comes from the distance to the press point (see update())
+        if self._flight_origin is not None:
+            return True
 
         # Check for drag threshold
         if MouseButton.LEFT in self._state.mouse_pressed:
@@ -314,13 +355,6 @@ class InputHandler:
                     self._camera.fly_look(dx, dy)
                     return True
 
-        elif MouseButton.MIDDLE in self._state.mouse_pressed:
-            # Pan camera
-            if self._camera.mode == CameraMode.ORBIT:
-                w, h = self._renderer.width(), self._renderer.height()
-                self._camera.orbit_pan(dx, dy, w, h)
-            return True
-
         elif MouseButton.RIGHT in self._state.mouse_pressed:
             # Pan camera (right-drag pan)
             if self._camera.mode == CameraMode.ORBIT:
@@ -335,7 +369,6 @@ class InputHandler:
         if not self._state.is_dragging and not any(self._state.mouse_pressed):
             self._schedule_hover_update(event.pos())
 
-        self._state.last_mouse_position = event.pos()
         return False
 
     def _schedule_hover_update(self, pos: QPoint) -> None:
@@ -404,7 +437,13 @@ class InputHandler:
         self._state.mouse_position = event.pos()
 
         if event.button() == Qt.MouseButton.LeftButton:
-            node = self._raycast_find_node(event.pos())
+            # Act on what the first click of the pair hit. That click may have
+            # expanded a directory and started a camera move, so a fresh
+            # raycast could land on something else (e.g. a file that just
+            # appeared under the cursor, which would then be opened).
+            node = self._last_press_node
+            if node is None:
+                node = self._raycast_find_node(event.pos())
             if node:
                 # Double-click on directory or file
                 self._handle_node_click(node, True)
@@ -462,6 +501,8 @@ class InputHandler:
         
     def update(self) -> None:
         """Process continuous input (called every frame)."""
+        self._update_flight()
+
         if self._camera.mode != CameraMode.FLY:
             return
             
@@ -521,6 +562,45 @@ class InputHandler:
 
     # Private methods
 
+    FLIGHT_DEAD_ZONE = 4  # Pixels around the press point where nothing moves
+
+    def _update_flight(self) -> None:
+        """Advance the fsn-style flight for one frame.
+
+        Mouse left/right of the press point moves sideways, forward/backward
+        moves forward/backward; the farther from the press point, the faster.
+        With Shift, moving forward also descends and moving backward climbs.
+        """
+        if self._flight_origin is None:
+            return
+
+        offset = self._state.mouse_position - self._flight_origin
+        off_x = float(offset.x())
+        off_y = float(-offset.y())  # Mouse forward (up the screen) = forward
+        if abs(off_x) < self.FLIGHT_DEAD_ZONE:
+            off_x = 0.0
+        if abs(off_y) < self.FLIGHT_DEAD_ZONE:
+            off_y = 0.0
+        if off_x == 0.0 and off_y == 0.0:
+            return
+
+        # Travel faster when high above the landscape, like looking from afar
+        altitude = max(float(self._camera.state.position[1]), 1.0)
+        scale = self.flight_speed * 0.004 * (1.0 + altitude * 0.1)
+
+        forward, right = self._camera.ground_axes()
+        delta = (forward * off_y + right * off_x) * scale
+        if self._state.shift_pressed:
+            delta[1] = -off_y * scale * 0.6
+
+        # Never dive below the ground
+        min_y = Camera.GROUND_Y + Camera.CAMERA_RADIUS + 0.5
+        new_y = float(self._camera.state.position[1]) + float(delta[1])
+        if new_y < min_y:
+            delta[1] = min_y - float(self._camera.state.position[1])
+
+        self._camera.translate(delta)
+
     def _raycast_find_node(self, pos: QPoint) -> Node | None:
         """Find node at screen position using raycasting.
 
@@ -557,6 +637,26 @@ class InputHandler:
 
         return None
 
+    def _pick_wire_node(self, pos: QPoint) -> Node | None:
+        """Resolve a click on a wire to a directory (fsn behaviour).
+
+        Clicking the line leading to a directory selects that directory; if
+        it is already selected, the click goes to its parent instead.
+        """
+        if not hasattr(self._renderer, 'pick_connection'):
+            return None
+        child_path = self._renderer.pick_connection(pos.x(), pos.y())
+        if child_path is None:
+            return None
+        node = self._nodes.get(child_path)
+        if node is None:
+            return None
+        if id(node) in self._selected_nodes and node.parent is not None:
+            parent = self._nodes.get(str(node.parent.path))
+            if parent is not None:
+                return parent
+        return node
+
     def _handle_node_click(self, node: Node, is_double_click: bool) -> None:
         """Handle node click event.
 
@@ -585,9 +685,8 @@ class InputHandler:
         # Update visual selection
         self._update_selection_visual()
 
-        # Handle double-click camera focus for directories
-        if is_double_click and node.is_directory:
-            self._focus_on_node(node)
+        if is_double_click and node.is_directory and self._on_node_focused:
+            self._on_node_focused(node)
 
         # Notify callbacks (controller handles both directory and file double-click)
         if self._on_node_clicked:

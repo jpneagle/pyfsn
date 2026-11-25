@@ -1061,9 +1061,12 @@ class ControlPanel(QWidget):
             "<b>Mouse:</b><br>"
             "L-Drag: Rotate (Orbit)<br>"
             "R-Drag: Pan/Look<br>"
+            "M-Drag / Alt+L-Drag: Fly<br>"
+            "&nbsp;&nbsp;(+Shift: up/down)<br>"
             "Scroll: Zoom<br>"
-            "Click: Select<br>"
-            "Dbl-Click: Open"
+            "Click: Select + zoom<br>"
+            "&nbsp;&nbsp;(loads a gray directory)<br>"
+            "Dbl-Click: Close-up / Open"
         )
         info.setWordWrap(True)
         info.setStyleSheet("color: gray; font-size: 10px;")
@@ -1308,6 +1311,25 @@ class FileTreeWidget(QTreeWidget):
 
         self.expandAll()
 
+    def add_children(self, node) -> None:
+        """Add the freshly loaded children of a directory under its item.
+
+        Used when a directory is expanded in the 3D view, so the tree does
+        not have to be rebuilt (which would lose scroll position/selection).
+
+        Args:
+            node: Directory node whose children were just loaded
+        """
+        item = self._path_to_item.get(str(node.path))
+        if item is None or item.childCount() > 0:
+            return
+        self._block_selection_signal = True
+        try:
+            self._load_children(node, item)
+            item.setExpanded(True)
+        finally:
+            self._block_selection_signal = False
+
     def _load_children(self, node, parent_item: QTreeWidgetItem) -> None:
         """Recursively load children.
 
@@ -1545,7 +1567,8 @@ class OnboardingOverlay(QWidget):
             "<b>It's a Unix system... I know this.</b><br><br>"
             "• <b>Left-drag</b> — rotate the view<br>"
             "• <b>Right-drag</b> — pan &nbsp;·&nbsp; <b>Scroll</b> — zoom<br>"
-            "• <b>Click</b> — select &nbsp;·&nbsp; <b>Double-click</b> — open / enter<br>"
+            "• <b>Click</b> — select &nbsp;·&nbsp; <b>Double-click</b> — close-up / open file<br>"
+            "• <b>Middle-drag</b> (or Alt+drag) — fly; clicking a gray directory loads it<br>"
             "• <b>Right-click</b> — context menu<br>"
             "• <b>Ctrl+K</b> — search &nbsp;·&nbsp; <b>Alt+←/→</b> — back / forward<br>"
             "• <b>Fly Mode</b> button — first-person WASD flight"
@@ -1602,6 +1625,10 @@ class MainWindow(QMainWindow):
     bookmark_selected = pyqtSignal(Path)
     show_hidden_toggled = pyqtSignal(bool)
     color_mode_selected = pyqtSignal(str)
+    height_mode_selected = pyqtSignal(str)
+    dir_height_mode_selected = pyqtSignal(str)
+    view_preset_requested = pyqtSignal(str)  # "front" or "birds_eye"
+    landscape_selected = pyqtSignal(str)
     mini_map_toggled = pyqtSignal(bool)
     recent_dir_selected = pyqtSignal(Path)
     tree_selection_changed = pyqtSignal(set)
@@ -1879,6 +1906,54 @@ class MainWindow(QMainWindow):
             color_mode_menu.addAction(act)
             self._color_mode_actions[key] = act
 
+        # Height submenus (SGI fsn "Display" menu)
+        height_menu = view_menu.addMenu("&Height")
+        self._height_mode_group = QActionGroup(self)
+        self._height_mode_group.setExclusive(True)
+        self._height_mode_actions: dict[str, QAction] = {}
+        for key, label in (
+            ("none", "&None"),
+            ("linear", "&Linear"),
+            ("exaggerated", "&Exaggerated (square root)"),
+            ("log", "Lo&garithmic"),
+        ):
+            act = QAction(label, self)
+            act.setCheckable(True)
+            act.triggered.connect(lambda _checked, k=key: self.height_mode_selected.emit(k))
+            self._height_mode_group.addAction(act)
+            height_menu.addAction(act)
+            self._height_mode_actions[key] = act
+
+        dir_height_menu = view_menu.addMenu("&Directory Height")
+        self._dir_height_mode_group = QActionGroup(self)
+        self._dir_height_mode_group.setExclusive(True)
+        self._dir_height_mode_actions: dict[str, QAction] = {}
+        for key, label in (
+            ("flat", "&Flat"),
+            ("files", "Files &Only"),
+            ("children", "Including &Children"),
+        ):
+            act = QAction(label, self)
+            act.setCheckable(True)
+            act.triggered.connect(lambda _checked, k=key: self.dir_height_mode_selected.emit(k))
+            self._dir_height_mode_group.addAction(act)
+            dir_height_menu.addAction(act)
+            self._dir_height_mode_actions[key] = act
+
+        # Landscape submenu (sky and ground colours, fsn "-landscape")
+        from pyfsn.view.renderer import LANDSCAPES
+        landscape_menu = view_menu.addMenu("&Landscape")
+        self._landscape_group = QActionGroup(self)
+        self._landscape_group.setExclusive(True)
+        self._landscape_actions: dict[str, QAction] = {}
+        for key, landscape in LANDSCAPES.items():
+            act = QAction(landscape.name, self)
+            act.setCheckable(True)
+            act.triggered.connect(lambda _checked, k=key: self.landscape_selected.emit(k))
+            self._landscape_group.addAction(act)
+            landscape_menu.addAction(act)
+            self._landscape_actions[key] = act
+
         view_menu.addSeparator()
 
         self._toggle_sound_action = QAction("&Sound Effects", self)
@@ -1917,6 +1992,11 @@ class MainWindow(QMainWindow):
         reset_view_action.setShortcut("Home")
         reset_view_action.triggered.connect(self._reset_view)
         view_menu.addAction(reset_view_action)
+
+        birds_eye_action = QAction("&Bird's Eye View", self)
+        birds_eye_action.setShortcut("Ctrl+B")
+        birds_eye_action.triggered.connect(lambda: self.view_preset_requested.emit("birds_eye"))
+        view_menu.addAction(birds_eye_action)
 
         # Go menu (history / hierarchy navigation)
         go_menu = menubar.addMenu("&Go")
@@ -2072,6 +2152,24 @@ class MainWindow(QMainWindow):
         if act is not None:
             act.setChecked(True)
 
+    def set_landscape_checked(self, key: str) -> None:
+        """Sync the Landscape menu check state."""
+        act = self._landscape_actions.get(key)
+        if act is not None:
+            act.setChecked(True)
+
+    def set_height_mode_checked(self, mode: str) -> None:
+        """Sync the Height menu check state."""
+        act = self._height_mode_actions.get(mode)
+        if act is not None:
+            act.setChecked(True)
+
+    def set_dir_height_mode_checked(self, mode: str) -> None:
+        """Sync the Directory Height menu check state."""
+        act = self._dir_height_mode_actions.get(mode)
+        if act is not None:
+            act.setChecked(True)
+
     def set_color_mode_legend(self, mode: str, type_colors: dict[str, tuple[float, float, float, float]] | None = None) -> None:
         """Show the appropriate legend for the active color mode.
 
@@ -2119,13 +2217,8 @@ class MainWindow(QMainWindow):
             self._search_bar.setFocus()
 
     def _reset_view(self) -> None:
-        """Reset camera to default view."""
-        if self._renderer:
-            import numpy as np
-            self._renderer.camera._state.position = np.array([10.0, 10.0, 10.0], dtype=np.float32)
-            self._renderer.camera._state.target = np.array([0.0, 0.0, 0.0], dtype=np.float32)
-            self._renderer.camera._update_orbit_from_position()
-            self._renderer.camera.set_mode(CameraMode.ORBIT)
+        """Reset camera to the front view of the landscape (fsn "reset")."""
+        self.view_preset_requested.emit("front")
 
     def _show_about(self) -> None:
         """Show about dialog."""

@@ -445,6 +445,7 @@ all = [
     { name = "pyopengl-accelerate" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "send2trash" },
 ]
 legacy = [
     { name = "pyopengl-accelerate" },
@@ -454,6 +455,9 @@ modern = [
     { name = "moderngl-window" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+]
+trash = [
+    { name = "send2trash" },
 ]
 video = [
     { name = "opencv-python" },
@@ -470,14 +474,15 @@ requires-dist = [
     { name = "moderngl-window", marker = "extra == 'modern'", specifier = ">=2.4.0" },
     { name = "numpy", specifier = ">=1.24.0" },
     { name = "opencv-python", marker = "extra == 'video'", specifier = ">=4.8.0" },
-    { name = "pyfsn", extras = ["legacy", "modern", "video"], marker = "extra == 'all'" },
+    { name = "pyfsn", extras = ["legacy", "modern", "video", "trash"], marker = "extra == 'all'" },
     { name = "pyopengl", specifier = ">=3.1.0" },
     { name = "pyopengl-accelerate", marker = "extra == 'accelerate'", specifier = ">=3.1.0" },
     { name = "pyopengl-accelerate", marker = "extra == 'legacy'", specifier = ">=3.1.0" },
     { name = "pyqt6", specifier = ">=6.6.0" },
     { name = "scipy", marker = "extra == 'modern'", specifier = ">=1.11.0" },
+    { name = "send2trash", marker = "extra == 'trash'", specifier = ">=1.8.0" },
 ]
-provides-extras = ["legacy", "modern", "video", "accelerate", "all"]
+provides-extras = ["legacy", "modern", "video", "trash", "accelerate", "all"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=9.0.2" }]
@@ -826,6 +831,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/52/52/e57eceff0e342a1f50e274264ed47497b59e6a4e3118808ee58ddda7b74a/scipy-1.17.1-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:a77cbd07b940d326d39a1d1b37817e2ee4d79cb30e7338f3d0cddffae70fcaa2", size = 37682317, upload-time = "2026-02-23T00:22:18.513Z" },
     { url = "https://files.pythonhosted.org/packages/11/2f/b29eafe4a3fbc3d6de9662b36e028d5f039e72d345e05c250e121a230dd4/scipy-1.17.1-cp314-cp314t-win_amd64.whl", hash = "sha256:eb092099205ef62cd1782b006658db09e2fed75bffcae7cc0d44052d8aa0f484", size = 37345327, upload-time = "2026-02-23T00:22:24.442Z" },
     { url = "https://files.pythonhosted.org/packages/07/39/338d9219c4e87f3e708f18857ecd24d22a0c3094752393319553096b98af/scipy-1.17.1-cp314-cp314t-win_arm64.whl", hash = "sha256:200e1050faffacc162be6a486a984a0497866ec54149a01270adc8a59b7c7d21", size = 25489165, upload-time = "2026-02-23T00:22:29.563Z" },
+]
+
+[[package]]
+name = "send2trash"
+version = "2.2.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/aa/9c/41c11853a5fb67b4639993a628182d326ffe4327eb28a125d202fb49950f/send2trash-2.2.0.tar.gz", hash = "sha256:e0ac412073f7984288908d9d8b8d13c82be69a615bb513d948fa2f053447970a", size = 19703, upload-time = "2026-11-12T00:35:19.813Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b2/de/7a9e77bd4c5f6eb11d90eb75807c1e1f0ea54997b05ae86d6fc5fa080c04/send2trash-2.2.0-py3-none-any.whl", hash = "sha256:7f540296d59744fbf2f88b0d6f3a484af78c94d3c20e0875a4d5eed61aef037c", size = 17436, upload-time = "2026-11-12T00:35:18.674Z" },
 ]
 
 [[package]]
